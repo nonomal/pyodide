@@ -28,13 +28,13 @@
 
 // No BigUint64Array, have to manually split / join lower and upper byte
 //
-#define BIGINT_LOWER(x) (Number((x)&BigInt(0xffffffff)) | 0)
+#define BIGINT_LOWER(x) (Number((x) & BigInt(0xffffffff)) | 0)
 #define BIGINT_UPPER(x) (Number((x) >> BigInt(32)) | 0)
 #define UBIGINT_FROM_PAIR(lower, upper)                                        \
   (BigInt(lower) | (BigInt(upper) << BigInt(32)))
 
 #define IBIGINT_FROM_PAIR(lower, upper)                                        \
-  (BigInt(lower) | (BigInt(upper - 2 * (upper & 0x80000000)) << BigInt(32)))
+  (BigInt(lower) | (BigInt(upper + 2 * (upper & 0x80000000)) << BigInt(32)))
 
 #define LOAD_U64(addr, offset)                                                 \
   UBIGINT_FROM_PAIR(DEREF_U32(addr, offset * 2),                               \

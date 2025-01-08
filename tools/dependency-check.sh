@@ -6,12 +6,21 @@ failure_exit() {
 }
 
 check_python_version() {
+  if [ -z "$PYMAJOR$PYMINOR" ]; then
+    echo >&2 "$0: This script expects that environment variables PYMAJOR and PYMINOR are set; skipping check_python_version"
+    return
+  fi
   if ! command -v python"$PYMAJOR"."$PYMINOR" &> /dev/null; then
     echo >&2 "Must compile with python $PYMAJOR.$PYMINOR."
     exit 1
   fi
 }
+
 check_python_headers() {
+  if [ -z "$PYMAJOR$PYMINOR" ]; then
+    echo >&2 "$0: This script expects that environment variables PYMAJOR and PYMINOR are set; skipping check_python_headers"
+    return
+  fi
   local python_headers_present
   python_headers_present=$(pkg-config --libs python-"$PYMAJOR"."$PYMINOR")
 
@@ -40,17 +49,32 @@ check_cmake() {
   check_binary_present "cmake"
 }
 
-check_libtool() {
-  check_binary_present "libtool"
+check_sed() {
+  check_binary_present "sed"
+  gnu_sed_found=$(sed --help | grep -q gnu.org)
+
+  if [ "${gnu_sed_found}" ]; then
+    echo >&2 "Pyodide requires GNU sed."
+    echo >&2 "If you are on macOS you can install it with 'brew install gnu-sed' and then add it to your PATH."
+    exit 1
+  fi
 }
 
-check_fortran_dependencies() {
-  check_binary_present "gfortran"
-  check_binary_present "f2c"
+check_patch() {
+  check_binary_present "patch"
+  gnu_patch_found=$(patch --help | grep -q gnu.org)
+
+  if [ "${gnu_patch_found}" ]; then
+    echo >&2 "Pyodide requires GNU patch."
+    echo >&2 "If you are on macOS you can install it with 'brew install gpatch' and then add it to your PATH."
+    exit 1
+  fi
 }
 
 check_python_version
 check_pkgconfig
+check_cmake
+check_sed
+check_patch
 #check_python_headers
-check_fortran_dependencies
 check_shasum

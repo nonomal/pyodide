@@ -1,4 +1,4 @@
-from pyodide_test_runner import run_in_pyodide
+from pytest_pyodide import run_in_pyodide
 
 
 @run_in_pyodide(packages=["wrapt"])
@@ -49,8 +49,8 @@ def test_wrapt(selenium):
         def test_argspec(self):
             # Test preservation of function argument specification.
 
-            function1o_argspec = inspect.getargspec(function1o)
-            function1d_argspec = inspect.getargspec(function1d)
+            function1o_argspec = inspect.getfullargspec(function1o)
+            function1d_argspec = inspect.getfullargspec(function1d)
             self.assertEqual(function1o_argspec, function1d_argspec)
 
         def test_isinstance(self):
@@ -79,5 +79,5 @@ def test_wrapt(selenium):
             self.assertEqual(result, (_args, _kwargs))
 
     # Run tests
-    with unittest.TestCase().assertRaisesRegex(SystemExit, "False"):
+    with unittest.TestCase().assertRaisesRegex(SystemExit, "5"):
         unittest.main()

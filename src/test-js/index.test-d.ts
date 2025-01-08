@@ -1,22 +1,31 @@
 import { expectType, expectAssignable } from "tsd";
+import { version, loadPyodide, PackageData } from "pyodide";
+
 import {
-  loadPyodide,
   PyProxy,
   PyProxyWithLength,
   PyProxyWithGet,
   PyProxyWithSet,
   PyProxyWithHas,
-  PyProxyIterable,
-  PyProxyIterator,
-  PyProxyAwaitable,
-  PyProxyBuffer,
-  PyProxyCallable,
+  PyIterable,
+  PyIterator,
+  PyAwaitable,
   PyBuffer,
+  PyCallable,
+  PyBufferView,
+  PyDict,
   TypedArray,
-} from "pyodide";
+} from "pyodide/ffi";
+
+// TODO: check that these are exported only as types not as values
+// Currently tsd doesn't do this:
+// ✖   Module "pyodide/ffi" declares TypedArray locally, but it is not exported.
+// ✖   Expected an error, but found none.
+// expectError(new PyProxy());
 
 async function main() {
   let pyodide = await loadPyodide();
+
   expectType<Promise<typeof pyodide>>(loadPyodide({ indexURL: "blah" }));
   expectType<Promise<typeof pyodide>>(loadPyodide({ fullStdLib: true }));
 
@@ -27,14 +36,13 @@ async function main() {
       stdin: () => "a string",
       stdout: (x: string) => {},
       stderr: (err: string) => {},
-    })
+    }),
   );
 
   expectType<PyProxy>(pyodide.globals);
 
   let x: any;
-  expectType<boolean>(pyodide.isPyProxy(x));
-  if (pyodide.isPyProxy(x)) {
+  if (x instanceof pyodide.ffi.PyProxy) {
     expectType<PyProxy>(x);
   } else {
     expectType<any>(x);
@@ -47,33 +55,37 @@ async function main() {
   expectType<Promise<any>>(pyodide.runPythonAsync("1+1"));
   expectType<Promise<any>>(pyodide.runPythonAsync("1+1", { globals: px }));
 
-  expectType<Promise<void>>(pyodide.loadPackagesFromImports("import some_pkg"));
-  expectType<Promise<void>>(
-    pyodide.loadPackagesFromImports("import some_pkg", (x: any) =>
-      console.log(x)
-    )
+  expectType<Promise<Array<PackageData>>>(
+    pyodide.loadPackagesFromImports("import some_pkg"),
   );
-  expectType<Promise<void>>(
-    pyodide.loadPackagesFromImports(
-      "import some_pkg",
-      (x: any) => console.log(x),
-      (x: any) => console.warn(x)
-    )
+  expectType<Promise<Array<PackageData>>>(
+    pyodide.loadPackagesFromImports("import some_pkg", {
+      messageCallback: (x: any) => console.log(x),
+    }),
+  );
+  expectType<Promise<Array<PackageData>>>(
+    pyodide.loadPackagesFromImports("import some_pkg", {
+      messageCallback: (x: any) => console.log(x),
+      errorCallback: (x: any) => console.warn(x),
+    }),
   );
 
-  expectType<Promise<void>>(pyodide.loadPackage("blah"));
-  expectType<Promise<void>>(pyodide.loadPackage(["blah", "blah2"]));
-  expectType<Promise<void>>(
-    pyodide.loadPackage("blah", (x: any) => console.log(x))
+  expectType<Promise<Array<PackageData>>>(pyodide.loadPackage("blah"));
+  expectType<Promise<Array<PackageData>>>(
+    pyodide.loadPackage(["blah", "blah2"]),
   );
-  expectType<Promise<void>>(
-    pyodide.loadPackage(
-      ["blah", "blah2"],
-      (x: any) => console.log(x),
-      (x: any) => console.warn(x)
-    )
+  expectType<Promise<Array<PackageData>>>(
+    pyodide.loadPackage("blah", {
+      messageCallback: (x: any) => console.log(x),
+    }),
   );
-  expectType<Promise<void>>(pyodide.loadPackage(px));
+  expectType<Promise<Array<PackageData>>>(
+    pyodide.loadPackage(["blah", "blah2"], {
+      messageCallback: (x: any) => console.log(x),
+      errorCallback: (x: any) => console.warn(x),
+    }),
+  );
+  expectType<Promise<Array<PackageData>>>(pyodide.loadPackage(px));
 
   expectType<PyProxy>(pyodide.pyodide_py);
   expectType<void>(pyodide.registerJsModule("blah", { a: 7 }));
@@ -85,7 +97,8 @@ async function main() {
 
   expectType<any>(px.x);
   expectType<PyProxy>(px.copy());
-  expectType<void>(px.destroy("blah"));
+  expectType<void>(px.destroy({ message: "blah" }));
+  expectType<void>(px.destroy({ destroyRoundtrip: false }));
   expectType<void>(px.destroy());
   expectType<any>(px.toJs());
   expectType<any>(px.toJs({}));
@@ -96,35 +109,43 @@ async function main() {
   expectType<string>(px.toString());
   expectType<string>(px.type);
 
-  if (px.supportsGet()) {
+  if (px instanceof pyodide.ffi.PyProxyWithGet) {
     expectType<PyProxyWithGet>(px);
     expectType<(x: any) => any>(px.get);
   }
 
-  if (px.supportsHas()) {
+  if (px instanceof pyodide.ffi.PyProxyWithHas) {
     expectType<PyProxyWithHas>(px);
     expectType<(x: any) => boolean>(px.has);
   }
 
-  if (px.supportsLength()) {
+  if (px instanceof pyodide.ffi.PyProxyWithLength) {
     expectType<PyProxyWithLength>(px);
     expectType<number>(px.length);
   }
 
-  if (px.supportsSet()) {
+  if (px instanceof pyodide.ffi.PyProxyWithSet) {
     expectType<PyProxyWithSet>(px);
     expectType<(x: any, y: any) => void>(px.set);
   }
 
-  if (px.isAwaitable()) {
-    expectType<PyProxyAwaitable>(px);
+  if (px instanceof pyodide.ffi.PyDict) {
+    expectAssignable<PyProxyWithHas>(px);
+    expectAssignable<PyProxyWithGet>(px);
+    expectAssignable<PyProxyWithSet>(px);
+    expectAssignable<PyProxyWithLength>(px);
+    expectAssignable<PyIterable>(px);
+  }
+
+  if (px instanceof pyodide.ffi.PyAwaitable) {
+    expectType<PyAwaitable>(px);
     expectType<any>(await px);
   }
 
-  if (px.isBuffer()) {
-    expectType<PyProxyBuffer>(px);
+  if (px instanceof pyodide.ffi.PyBuffer) {
+    expectType<PyBuffer>(px);
     let buf = px.getBuffer();
-    expectType<PyBuffer>(buf);
+    expectType<PyBufferView>(buf);
     expectType<boolean>(buf.c_contiguous);
     expectType<TypedArray>(buf.data);
     expectType<boolean>(buf.f_contiguous);
@@ -139,14 +160,14 @@ async function main() {
     expectType<number[]>(buf.strides);
   }
 
-  if (px.isCallable()) {
-    expectType<PyProxyCallable>(px);
+  if (px instanceof pyodide.ffi.PyCallable) {
+    expectType<PyCallable>(px);
     expectType<any>(px(1, 2, 3));
     expectAssignable<(...args: any[]) => any>(px);
   }
 
-  if (px.isIterable()) {
-    expectType<PyProxyIterable>(px);
+  if (px instanceof pyodide.ffi.PyIterable) {
+    expectType<PyIterable>(px);
     for (let x of px) {
       expectType<any>(x);
     }
@@ -154,8 +175,8 @@ async function main() {
     expectAssignable<{ done?: any; value: any }>(it.next());
   }
 
-  if (px.isIterator()) {
-    expectType<PyProxyIterator>(px);
+  if (px instanceof pyodide.ffi.PyIterator) {
+    expectType<PyIterator>(px);
     expectAssignable<{ done?: any; value: any }>(px.next());
     expectAssignable<{ done?: any; value: any }>(px.next(22));
   }

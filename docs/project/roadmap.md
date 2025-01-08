@@ -5,6 +5,13 @@ see developed in Pyodide. The fact that an item is listed here is in no way a
 promise that it will happen, as resources are limited. Rather, it is an
 indication that help is welcomed on this topic.
 
+## Improve documentation
+
+Our API documentation is fairly detailed, but they need more introductory
+information like tutorials. We also want to add more information to the FAQ and
+improve the organization. It would also be good to find some way to include
+interactive code pens in the documentation.
+
 ## Reducing download sizes and initialization times
 
 At present a first load of Pyodide requires a 6.4 MB download, and the
@@ -22,7 +29,7 @@ See issue {issue}`646`.
 Across [benchmarks](https://github.com/pyodide/pyodide/tree/main/benchmark)
 Pyodide is currently around 3x to 5x slower than native Python.
 
-At the same type, C code compiled to WebAssembly typically runs between near
+At the same time, C code compiled to WebAssembly typically runs between near
 native speed and 2x to 2.5x times slower (Jangda et al. 2019
 [PDF](https://www.usenix.org/system/files/atc19-jangda.pdf)). It is therefore
 very likely that the performance of Python code in Pyodide can be improved with
@@ -32,36 +39,6 @@ In addition, scientific Python code would benefit from packaging a high
 performance BLAS library such as BLIS.
 
 See issue {issue}`1120`.
-
-## Better support and documentation for loading user Python code
-
-Currently, most of our documentation suggests using `pyodide.runPython` to run
-code. This makes code difficult to maintain, because it won't work with `mypy`,
-`black`, or other code analysis tools, doesn't get good syntax highlighting in
-editors, etc. It also may lead to passing "arguments" to code via string
-formatting, missing out on the type conversion utilities.
-
-Our goal is to develop and document a better workflow for users to develop
-Python code for use in Pyodide.
-
-See issue {issue}`1940`.
-
-## Improvements to package loading system
-
-Currently, Pyodide has two ways of loading packages:
-
-- {any}`pyodide.loadPackage` for packages built with Pyodide and
-- {any}`micropip.install` for pure Python packages from PyPI.
-
-The relationship between these tools is currently confusing.
-
-Our goal is to have three ways to load packages: one with no dependency
-resolution at all, one with static dependency resolution which is done ahead of
-time, and one for dynamic dependency resolution. Ideally most applications can
-use static dependency resolution and repls can use dynamic dependency
-resolution.
-
-See issues {issue}`2045` and {issue}`1100`.
 
 ## Find a better way to compile Fortran
 
@@ -83,7 +60,7 @@ See {issue}`scipy/scipy#15290`.
 
 Some of the challenges that Pyodide faces, such as maintaining a collection of
 build recipes, dependency resolution from PyPI, etc are already solved in either
-Python or JavaScript ecosystems. We should therefore strive to better re-use
+Python or JavaScript ecosystems. We should therefore strive to better reuse
 existing tooling, and seeking synergies with existing initiatives in this space,
 such as conda-forge.
 

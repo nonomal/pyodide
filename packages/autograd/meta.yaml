@@ -1,13 +1,19 @@
 package:
   name: autograd
-  version: "1.4"
-source:
-  sha256: 383de0f537ef2e38b85ff9692593b0cfae8958c9b3bd451b52c255fd9171ffce
-  url: https://files.pythonhosted.org/packages/04/6d/63beeb8c1f1964aa7d84e59657c7f5b85f6ae009ed80f51e0d3ec78e0f97/autograd-1.4.tar.gz
-test:
-  imports:
+  version: 1.7.0
+  top-level:
     - autograd
+source:
+  sha256: de743fd368d6df523cd37305dcd171861a9752a144493677d2c9f5a56983ff2f
+  url: https://files.pythonhosted.org/packages/28/ed/67975d75c0fe71220c8df2370c6c1390805790a641359b502f39c042c0c1/autograd-1.7.0.tar.gz
 requirements:
+  host:
+    - numpy
   run:
     - numpy
     - future
+about:
+  home: https://github.com/HIPS/autograd
+  PyPI: https://pypi.org/project/autograd
+  summary: Efficiently computes derivatives of numpy code.
+  license: MIT

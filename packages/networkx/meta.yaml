@@ -1,6 +1,8 @@
 package:
   name: networkx
-  version: 2.7.1
+  version: 3.4.2
+  top-level:
+    - networkx
 requirements:
   run:
     - decorator
@@ -8,8 +10,8 @@ requirements:
     - matplotlib
     - numpy
 source:
-  sha256: 011e85d277c89681e8fa661cf5ff0743443445049b0b68789ad55ef09340c6e0
-  url: https://files.pythonhosted.org/packages/f6/34/4913f651b8e178dde5abcf8d62495e4dcd0757a9a6840f1b1f7a290afaea/networkx-2.7.1-py3-none-any.whl
+  sha256: df5d4365b724cf81b8c6a7312509d0c22386097011ad1abe274afd5e9d3bbc5f
+  url: https://files.pythonhosted.org/packages/b9/54/dd730b32ea14ea797530a4479b2ed46a6fb250f682a9cfb997e968bf0261/networkx-3.4.2-py3-none-any.whl
 test:
   imports:
     - networkx
@@ -38,3 +40,6 @@ test:
     - networkx.readwrite
     - networkx.readwrite.json_graph
     - networkx.utils
+about:
+  home: https://networkx.org/
+  license: BSD-3-Clause

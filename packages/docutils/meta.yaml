@@ -1,9 +1,13 @@
 package:
   name: docutils
-  version: 0.18.1
-source:
-  sha256: 23010f129180089fbcd3bc08cfefccb3b890b0050e1ca00c867036e9d161b98c
-  url: https://files.pythonhosted.org/packages/8d/14/69b4bad34e3f250afe29a854da03acb6747711f3df06c359fa053fae4e76/docutils-0.18.1-py2.py3-none-any.whl
-test:
-  imports:
+  version: 0.21.1
+  top-level:
     - docutils
+source:
+  sha256: 14c8d34a55b46c88f9f714adb29cefbdd69fb82f3fef825e59c5faab935390d8
+  url: https://files.pythonhosted.org/packages/ea/6a/1c934b70bc12be40be886060709317c2ad5a5fe2180469410bd9344f5235/docutils-0.21.1-py3-none-any.whl
+about:
+  home: https://docutils.sourceforge.io/
+  PyPI: https://pypi.org/project/docutils
+  summary: Docutils -- Python Documentation Utilities
+  license: Mixed public domain, Python, BSD-2-Clause, GPL-3.0 (see COPYING.txt)

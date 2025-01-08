@@ -1,18 +1,34 @@
 import sys
+from collections.abc import Callable, Sequence
 from importlib.abc import Loader, MetaPathFinder
+from importlib.machinery import ModuleSpec
 from importlib.util import spec_from_loader
+from types import ModuleType
 from typing import Any
+
+from ._core_docs import JsProxy
 
 
 class JsFinder(MetaPathFinder):
-    def __init__(self):
-        self.jsproxies = {}
+    def __init__(self) -> None:
+        self.jsproxies: dict[str, Any] = {}
+        self.hook: Callable[[JsProxy], None] = lambda _: None
 
-    def find_spec(self, fullname, path, target=None):
-        assert JsProxy is not None
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[bytes | str] | None,
+        target: ModuleType | None = None,
+    ) -> ModuleSpec | None:
         [parent, _, child] = fullname.rpartition(".")
         if parent:
-            parent_module = sys.modules[parent]
+            try:
+                parent_module = sys.modules[parent]
+            except KeyError:
+                # Note: This will never happen when we're called from importlib,
+                # but pytest hits this codepath. See
+                # `test_importhook_called_from_pytest`.
+                return None
             if not isinstance(parent_module, JsProxy):
                 # Not one of us.
                 return None
@@ -40,15 +56,15 @@ class JsFinder(MetaPathFinder):
         can then be imported from Python using the standard Python import
         system. If another module by the same name has already been imported,
         this won't have much effect unless you also delete the imported module
-        from ``sys.modules``. This is called by the JavaScript API
-        :any:`pyodide.registerJsModule`.
+        from :py:data:`sys.modules`. This is called by the JavaScript API
+        :js:func:`pyodide.registerJsModule`.
 
         Parameters
         ----------
-        name : str
+        name :
             Name of js module
 
-        jsproxy : JsProxy
+        jsproxy :
             JavaScript object backing the module
         """
         assert JsProxy is not None
@@ -60,22 +76,23 @@ class JsFinder(MetaPathFinder):
             raise TypeError(
                 f"Argument 'jsproxy' must be a JsProxy, not {type(jsproxy).__name__!r}"
             )
+        self.hook(jsproxy)
         self.jsproxies[name] = jsproxy
 
     def unregister_js_module(self, name: str) -> None:
         """
         Unregisters a JavaScript module with given name that has been previously
-        registered with :any:`pyodide.registerJsModule` or
-        :any:`pyodide.register_js_module`. If a JavaScript module with that name
+        registered with :js:func:`pyodide.registerJsModule` or
+        :py:func:`pyodide.ffi.register_js_module`. If a JavaScript module with that name
         does not already exist, will raise an error. If the module has already
         been imported, this won't have much effect unless you also delete the
-        imported module from ``sys.modules``. This is called by the JavaScript
-        API :any:`pyodide.unregisterJsModule`.
+        imported module from :py:data:`sys.modules`. This is called by the JavaScript
+        API :js:func:`pyodide.unregisterJsModule`.
 
         Parameters
         ----------
-        name : str
-            Name of js module
+        name :
+            Name of the module to unregister
         """
         try:
             del self.jsproxies[name]
@@ -86,27 +103,26 @@ class JsFinder(MetaPathFinder):
 
 
 class JsLoader(Loader):
-    def __init__(self, jsproxy):
+    def __init__(self, jsproxy: Any) -> None:
         self.jsproxy = jsproxy
 
-    def create_module(self, spec):
+    def create_module(self, spec: ModuleSpec) -> Any:
         return self.jsproxy
 
-    def exec_module(self, module):
+    def exec_module(self, module: ModuleType) -> None:
         pass
 
     # used by importlib.util.spec_from_loader
-    def is_package(self, fullname):
+    def is_package(self, fullname: str) -> bool:
         return True
 
 
-JsProxy: type | None = None
 jsfinder: JsFinder = JsFinder()
 register_js_module = jsfinder.register_js_module
 unregister_js_module = jsfinder.unregister_js_module
 
 
-def register_js_finder():
+def register_js_finder(*, hook: Callable[[JsProxy], None]) -> None:
     """A bootstrap function, called near the end of Pyodide initialization.
 
     It is called in ``loadPyodide`` in ``pyodide.js`` once ``_pyodide_core`` is ready
@@ -118,8 +134,68 @@ def register_js_finder():
 
     This needs to be a function to allow the late import from ``_pyodide_core``.
     """
-    import _pyodide_core
-
-    global JsProxy
-    JsProxy = _pyodide_core.JsProxy
+    for importer in sys.meta_path:
+        if isinstance(importer, JsFinder):
+            raise RuntimeError("JsFinder already registered")
+    jsfinder.hook = hook
     sys.meta_path.append(jsfinder)
+
+
+STDLIBS = sys.stdlib_module_names | {"test"}
+UNVENDORED_STDLIBS_AND_TEST: set[str] = set()
+
+
+REPODATA_PACKAGES_IMPORT_TO_PACKAGE_NAME: dict[str, str] = {}
+
+SEE_PACKAGE_LOADING = (
+    "\nSee https://pyodide.org/en/stable/usage/loading-packages.html for more details."
+)
+
+YOU_CAN_INSTALL_IT_BY = """
+You can install it by calling:
+  await micropip.install("{package_name}") in Python, or
+  await pyodide.loadPackage("{package_name}") in JavaScript\
+"""
+
+PYODIDE_ADDED_NOTE = "_PYODIDE_ADDED_NOTE"
+
+
+def add_note_to_module_not_found_error(e: ModuleNotFoundError) -> None:
+    if hasattr(e, PYODIDE_ADDED_NOTE):
+        return
+    import_name = e.name
+    if not import_name:
+        return
+    package_name = REPODATA_PACKAGES_IMPORT_TO_PACKAGE_NAME.get(import_name, "")
+
+    if not package_name and import_name not in STDLIBS:
+        return
+
+    if package_name in UNVENDORED_STDLIBS_AND_TEST:
+        msg = "The module '{package_name}' is unvendored from the Python standard library in the Pyodide distribution."
+        msg += YOU_CAN_INSTALL_IT_BY
+    elif import_name in STDLIBS:
+        msg = (
+            "The module '{import_name}' is removed from the Python standard library in the"
+            " Pyodide distribution due to browser limitations."
+        )
+    else:
+        msg = "The module '{package_name}' is included in the Pyodide distribution, but it is not installed."
+        msg += YOU_CAN_INSTALL_IT_BY
+
+    msg += SEE_PACKAGE_LOADING
+    e.add_note(msg.format(import_name=import_name, package_name=package_name))
+    setattr(e, PYODIDE_ADDED_NOTE, True)
+
+
+def register_module_not_found_hook(packages: Any, unvendored: Any) -> None:
+    """
+    A function that adds UnvendoredStdlibFinder to the end of sys.meta_path.
+
+    Note that this finder must be placed in the end of meta_paths
+    in order to prevent any unexpected side effects.
+    """
+    global REPODATA_PACKAGES_IMPORT_TO_PACKAGE_NAME  # noqa: PLW0603
+    global UNVENDORED_STDLIBS_AND_TEST  # noqa: PLW0603
+    REPODATA_PACKAGES_IMPORT_TO_PACKAGE_NAME = packages.to_py()
+    UNVENDORED_STDLIBS_AND_TEST = set(unvendored.to_py())

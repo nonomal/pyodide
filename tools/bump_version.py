@@ -6,9 +6,9 @@ import functools
 import itertools
 import pathlib
 import re
-from ast import Str
+from ast import Constant
 from collections import namedtuple
-from typing import Callable
+from collections.abc import Callable
 
 CORE_VERSION_REGEX = r"(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
 
@@ -35,34 +35,34 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 Target = namedtuple("target", ("file", "pattern", "prerelease"))
 PYTHON_TARGETS = [
     Target(
+        file=ROOT / "Makefile.envs",
+        pattern=build_version_pattern(r"PYODIDE_VERSION \?= {python_version}"),
+        prerelease=True,
+    ),
+    Target(
         file=ROOT / "src/py/pyodide/__init__.py",
         pattern=build_version_pattern('__version__ = "{python_version}"'),
         prerelease=True,
     ),
     Target(
-        file=ROOT / "src/py/setup.cfg",
-        pattern=build_version_pattern("version = {python_version}"),
+        file=ROOT / "src/py/pyproject.toml",
+        pattern=build_version_pattern('version = "{python_version}"'),
         prerelease=True,
-    ),
-    Target(
-        ROOT / "pyodide-build/setup.cfg",
-        build_version_pattern("version = {python_version}"),
-        prerelease=True,
-    ),
-    Target(
-        ROOT / "docs/conf.py",
-        build_version_pattern('pyodide_version = "{python_version}"'),
-        prerelease=True,
-    ),
-    Target(
-        ROOT / "run_docker",
-        build_version_pattern('PYODIDE_PREBUILT_IMAGE_TAG="{python_version}"'),
-        prerelease=False,
     ),
     Target(
         ROOT / "docs/project/about.md",
         build_version_pattern(r"version\s*=\s*{{{python_version}}}"),
         prerelease=False,
+    ),
+    Target(
+        ROOT / "src/js/version.ts",
+        build_version_pattern('version: string = "{python_version}"'),
+        prerelease=True,
+    ),
+    Target(
+        ROOT / "src/core/pre.js",
+        build_version_pattern('API.version = "{python_version}"'),
+        prerelease=True,
     ),
 ]
 
@@ -81,7 +81,7 @@ JS_TARGETS = [
 
 
 @functools.lru_cache
-def python_version_to_js_version(version: str) -> Str:
+def python_version_to_js_version(version: str) -> Constant:
     """
     Convert Python version name to JS version name
     These two are different in prerelease or dev versions.
@@ -120,7 +120,7 @@ def parse_current_version(target: Target) -> str:
     match = target.pattern.search(content)
 
     if match is None:
-        raise ValueError(f"Unabled to detect version string: {target.file}")
+        raise ValueError(f"Unable to detect version string: {target.file}")
 
     return match.groupdict()["version"]
 
@@ -136,7 +136,6 @@ def generate_updated_content(
         return None
 
     # Some files only required to be bumped on core version release.
-    # For example, we don't deploy prebuilt docker images for dev release.
     if not target.prerelease:
         if not is_core_version(new_version):
             print(f"[*] {file}: Skipped (not targeting a core version)")
@@ -179,6 +178,11 @@ def parse_args():
     parser.add_argument(
         "--dry-run", action="store_true", help="Don't actually write anything"
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Compare the current contents to the updated contents and fail if it would change anything",
+    )
 
     return parser.parse_args()
 
@@ -202,8 +206,8 @@ def main():
     update_queue = []
 
     targets = itertools.chain(
-        zip(PYTHON_TARGETS, [new_version_py] * len(PYTHON_TARGETS)),
-        zip(JS_TARGETS, [new_version_js] * len(JS_TARGETS)),
+        zip(PYTHON_TARGETS, [new_version_py] * len(PYTHON_TARGETS), strict=True),
+        zip(JS_TARGETS, [new_version_js] * len(JS_TARGETS), strict=True),
     )
     for target, new_version in targets:
         current_version = parse_current_version(target)
@@ -211,12 +215,20 @@ def main():
         if new_content is not None:
             update_queue.append((target, new_content))
 
+    if args.check:
+        if update_queue:
+            print("Version update would change files, failing", file=sys.stderr)
+            return 1
+        return 0
     if args.dry_run:
-        return
+        return 0
 
-    for file, content in update_queue:
-        file.write_text(content)
+    for target, content in update_queue:
+        target.file.write_text(content)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    sys.exit(main())

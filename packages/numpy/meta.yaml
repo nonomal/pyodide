@@ -1,36 +1,36 @@
 package:
   name: numpy
-  version: 1.22.3
-
+  version: 2.0.2
+  tag:
+    - min-scipy-stack
+  top-level:
+    - numpy
 source:
-  url: https://files.pythonhosted.org/packages/64/4a/b008d1f8a7b9f5206ecf70a53f84e654707e7616a771d84c05151a4713e9/numpy-1.22.3.zip
-  sha256: dbc7601a3b7472d559dc7b933b18b4b66f9aa7452c120e87dfb33d02008c8a18
-
-  patches:
-    - patches/0001-disable-maybe-uninitialized.patch
-    - patches/0002-disable-optimization.patch
-    - patches/0003-dont-include-execinfo.patch
-    - patches/0004-Fix-ieee754.patch
-    - patches/0005-fix-longdouble.patch
-    - patches/0006-MAINT-BLD-Fix-math-feature-detection-for-wasm.patch
-    - patches/0007-BUG-Fix-the-return-type-of-random_float_fill.patch
-    - patches/0008-fix-static-init-of-nditer-pywrap.patch
-    - patches/0009-init-alloc-cache.patch
-    - patches/0010-make-int-return-values.patch
-    - patches/0011-not-build-lapack-lite-as-64-bit.patch
-    - patches/0012-use-local-blas-lapack.patch
-    - patches/0013-fix-invalid-asm-instruction.patch
-    - patches/0014-disable-svml.patch
+  url: https://files.pythonhosted.org/packages/a9/75/10dd1f8116a8b796cb2c737b674e02d02e80454bda953fa7e65d8c12b016/numpy-2.0.2.tar.gz
+  sha256: 883c987dee1880e2a864ab0dc9892292582510604156762362d9326444636e78
 
 build:
+  # numpy uses vendored meson, so we need to pass the cross file manually
+  backend-flags: |
+    setup-args=-Dallow-noblas=true
+    setup-args=--cross-file=${MESON_CROSS_FILE}
+  # numpy creates numpy/distutils/__pycache__ directory during the build.
+  # It breaks our test because there is a .pyc in the directory.
+  post: |
+    rm -rf numpy/distutils/__pycache__
   cflags: |
     -Wno-return-type
   cross-build-env: true
   cross-build-files:
-    - numpy/core/include/numpy/numpyconfig.h
-    - numpy/core/include/numpy/_numpyconfig.h
-    - numpy/core/lib/libnpymath.a
+    - numpy/_core/include/numpy/numpyconfig.h
+    - numpy/_core/include/numpy/_numpyconfig.h
+    - numpy/_core/lib/libnpymath.a
     - numpy/random/lib/libnpyrandom.a
-test:
-  imports:
-    - numpy
+about:
+  home: https://www.numpy.org
+  PyPI: https://pypi.org/project/numpy
+  summary: NumPy is the fundamental package for array computing with Python.
+  license: BSD-3-Clause
+extra:
+  recipe-maintainers:
+    - agriyakhetarpal

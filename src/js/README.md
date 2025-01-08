@@ -11,18 +11,40 @@ releases](https://github.com/pyodide/pyodide/releases)
 Then you can load Pyodide in Node.js as follows,
 
 ```js
-let pyodide_pkg = await import("pyodide/pyodide.js");
+// hello_python.js
+const { loadPyodide } = require("pyodide");
 
-let pyodide = await pyodide_pkg.loadPyodide({
-  indexURL: "<pyodide artifacts folder>",
+async function hello_python() {
+  let pyodide = await loadPyodide({
+    indexURL: "<pyodide artifacts folder>",
+  });
+  return pyodide.runPythonAsync("1+1");
+}
+
+hello_python().then((result) => {
+  console.log("Python says that 1+1 =", result);
 });
-
-await pyodide.runPythonAsync("1+1");
 ```
 
-**Note**: To start node REPL with support for top level await, use `node --experimental-repl-await`.
+```
+$ node hello_python.js
+Python says that 1+1= 2
+```
 
-See the [documentation](https://pyodide.org/en/stable/) fore more details.
+Or you can use the REPL. To start the Node.js REPL with support for top level
+await, use `node --experimental-repl-await`:
+
+```
+$ node --experimental-repl-await
+Welcome to Node.js v18.5.0.
+Type ".help" for more information.
+> const { loadPyodide } = require("pyodide");
+undefined
+> let pyodide = await loadPyodide();
+undefined
+> await pyodide.runPythonAsync("1+1");
+2
+```
 
 ## Details
 

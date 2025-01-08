@@ -1,19 +1,16 @@
 package:
   name: cffi
-  version: 1.15.0
+  version: 1.17.1
+  top-level:
+    - cffi
 requirements:
   run:
     - pycparser
 source:
-  url: https://files.pythonhosted.org/packages/00/9e/92de7e1217ccc3d5f352ba21e52398372525765b2e0c4530e6eb2ba9282a/cffi-1.15.0.tar.gz
-  sha256: 920f0d66a896c2d99f0adbb391f990a84091179542c205fa53ce5787aff87954
-  patches:
-    - patches/libffi-config.patch
+  url: https://files.pythonhosted.org/packages/fc/97/c783634659c2920c3fc70419e3af40972dbaf758daa229a7d6ea6135c90d/cffi-1.17.1.tar.gz
+  sha256: 1c39c6016c32bc48dd54561950ebd6836e1670f2ae46128f67cf49e789c52824
 build:
   cross-build-env: true
-test:
-  imports:
-    - cffi
 about:
   home: http://cffi.readthedocs.org
   PyPI: https://pypi.org/project/cffi

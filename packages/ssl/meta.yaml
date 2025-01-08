@@ -1,24 +1,32 @@
 package:
   name: ssl
-  version: 1.0.0 # Nonesense
+  version: 1.0.0 # Nonsense
+  tag:
+    - always
+  top-level:
+    - ssl
+    - _ssl
 source:
-  path: empty
+  path: src
 build:
-  sharedlibrary: true
+  type: cpython_module
   script: |
-    mkdir dist
-    export DISTDIR=$(pwd)/dist
-    cd $CPYTHONBUILD
-    emcc $STDLIB_MODULE_CFLAGS -c Modules/socketmodule.c -o Modules/socketmodule.o
-    emcc $STDLIB_MODULE_CFLAGS -c Modules/_ssl.c -o Modules/_ssl.o \
+    wget ${PYTHON_ARCHIVE_URL} -O Python-${PYVERSION}.tgz
+    tar -xf Python-${PYVERSION}.tgz
+    cd Python-${PYVERSION}
+
+    # OPENSSL_THREADS declares that OPENSSL is threadsafe. We are single threaded so everything is threadsafe.
+    emcc $STDLIB_MODULE_CFLAGS -c Modules/_ssl.c -o _ssl.o \
       $(pkg-config --cflags --dont-define-prefix openssl) \
-      $(pkg-config --libs --dont-define-prefix openssl) \
-      -DOPENSSL_THREADS # This declares that OPENSSL is threadsafe. We are single threaded so everything is threadsafe.
-    emcc Modules/_ssl.o -o $DISTDIR/_ssl.so $SIDE_MODULE_LDFLAGS $(pkg-config --libs --dont-define-prefix openssl)
-    emcc Modules/socketmodule.o -o $DISTDIR/socketmodule.so $SIDE_MODULE_LDFLAGS
+      -DOPENSSL_THREADS
+
+    emcc _ssl.o $(pkg-config --libs --dont-define-prefix openssl) $SIDE_MODULE_LDFLAGS -o ${PKG_BUILD_DIR}/_ssl.so
+    cp Lib/ssl.py ${PKG_BUILD_DIR}/ssl.py
+
 requirements:
+  host:
+    - openssl
   run:
     - openssl
-test:
-  imports:
-    - ssl
+about:
+  license: PSF

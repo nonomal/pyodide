@@ -1,5 +1,5 @@
 import pytest
-from pyodide_test_runner import run_in_pyodide
+from pytest_pyodide import run_in_pyodide
 
 
 def test_numpy(selenium):
@@ -27,7 +27,7 @@ def test_numpy(selenium):
 def test_typed_arrays(selenium):
     selenium.load_package("numpy")
     selenium.run("import numpy")
-    for (jstype, npytype) in (
+    for jstype, npytype in (
         ("Int8Array", "int8"),
         ("Uint8Array", "uint8"),
         ("Uint8ClampedArray", "uint8"),
@@ -65,7 +65,6 @@ def test_typed_arrays(selenium):
     ),
 )
 def test_python2js_numpy_dtype(selenium, order, dtype):
-
     selenium.load_package("numpy")
     selenium.run("import numpy as np")
 
@@ -101,7 +100,7 @@ def test_python2js_numpy_dtype(selenium, order, dtype):
     assert classname != "Array"
     selenium.run(
         """
-        x = x.byteswap().newbyteorder()
+        x = x.byteswap().view(x.dtype.newbyteorder())
         """
     )
     assert_equal()
@@ -145,7 +144,6 @@ def test_py2js_buffer_clear_error_flag(selenium):
     ),
 )
 def test_python2js_numpy_scalar(selenium, dtype):
-
     selenium.load_package("numpy")
     selenium.run("import numpy as np")
     selenium.run(
@@ -163,7 +161,7 @@ def test_python2js_numpy_scalar(selenium, dtype):
     )
     selenium.run(
         """
-        x = x.byteswap().newbyteorder()
+        x = x.byteswap().view(x.dtype.newbyteorder())
         """
     )
     assert (
@@ -220,13 +218,15 @@ def test_get_buffer(selenium):
         `);
         for(let x of ["z1", "z2", "z3", "z4"]){
             let z = pyodide.globals.get(x).getBuffer("u32");
+            console.log(`JavaScript ${x} buffer:`, z);
             for(let idx1 = 0; idx1 < 8; idx1++) {
                 for(let idx2 = 0; idx2 < 3; idx2++){
                     let v1 = z.data[z.offset + z.strides[0] * idx1 + z.strides[1] * idx2];
-                    let v2 = pyodide.runPython(`repr(${x}[${idx1}, ${idx2}])`);
-                    console.log(`${v1}, ${typeof(v1)}, ${v2}, ${typeof(v2)}, ${v1===v2}`);
-                    if(v1.toString() !== v2){
-                        throw new Error(`Discrepancy ${x}[${idx1}, ${idx2}]: ${v1} != ${v2}`);
+                    let v2 = pyodide.runPython(`int(${x}[${idx1}, ${idx2}])`);  // Convert to int
+                    let v2_repr = pyodide.runPython(`repr(${x}[${idx1}, ${idx2}])`);
+                    console.log(`${x}[${idx1}, ${idx2}]: JS=${v1} (${typeof(v1)}), Python=${v2} (${typeof(v2)}), repr=${v2_repr}`);
+                    if(v1 !== v2){
+                        throw new Error(`Discrepancy ${x}[${idx1}, ${idx2}]: ${v1} (${typeof(v1)}) != ${v2} (${typeof(v2)}), repr=${v2_repr}`);
                     }
                 }
             }
@@ -306,12 +306,12 @@ def test_get_buffer_big_endian(selenium):
         await pyodide.loadPackage(['numpy']);
         self.a = pyodide.runPython(`
             import numpy as np
-            np.arange(24, dtype="int16").byteswap().newbyteorder()
+            np.arange(24, dtype="int16").byteswap().view(np.dtype("int16").newbyteorder())
         `);
         """
     )
     with pytest.raises(
-        Exception, match="Javascript has no native support for big endian buffers"
+        Exception, match="JavaScript has no native support for big endian buffers"
     ):
         selenium.run_js("a.getBuffer()")
     result = selenium.run_js(

@@ -1,9 +1,12 @@
 package:
   name: fpcast-test
-  version: "0.1"
-  _tag: pyodide.test
+  version: "0.1.1"
+  tag:
+    - core
+    - pyodide.test
+  top-level:
+    - fpcast_test
 source:
   path: fpcast-test
-test:
-  imports:
-    - fpcast_test
+about:
+  license: MPL-2.0
