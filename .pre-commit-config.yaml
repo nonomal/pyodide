@@ -1,9 +1,9 @@
 exclude: (^.*patches|.*\.cgi$|^packages/micropip/src/micropip/externals|^benchmark/benchmarks$)
 default_language_version:
-  python: "3.10"
+  python: "3.12"
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: "v4.2.0"
+    rev: "v5.0.0"
     hooks:
       - id: check-added-large-files
       - id: check-case-conflict
@@ -16,76 +16,22 @@ repos:
       - id: mixed-line-ending
       - id: trailing-whitespace
 
-  - repo: https://github.com/PyCQA/isort
-    rev: "5.10.1"
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: "v0.9.1"
     hooks:
-      - id: isort
-
-  - repo: https://github.com/asottile/pyupgrade
-    rev: "v2.32.1"
-    hooks:
-      - id: pyupgrade
-        args: ["--py310-plus"]
-
-  - repo: https://github.com/hadialqattan/pycln
-    rev: "v1.3.3"
-    hooks:
-      - id: pycln
-        args: [--config=pyproject.toml]
-        stages: [manual]
-
-  - repo: https://github.com/psf/black
-    rev: "22.3.0"
-    hooks:
-      - id: black
-
-  - repo: https://github.com/pycqa/flake8
-    rev: "4.0.1"
-    hooks:
-      - id: flake8
-        additional_dependencies: [flake8-bugbear]
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: "v0.950"
-    hooks:
-      - id: mypy
-        files: ^(packages/.*/src|src|pyodide-build/pyodide_build)
-        exclude: (setup.py|^src/tests|conftest.py)
-        args: []
-        additional_dependencies: &mypy-deps
-          - packaging
-          - types-docutils
-          - types-pyyaml
-          - types-setuptools
-          - numpy
-          - build
-          - pytest
-      - id: mypy
-        name: mypy-tests
-        args: [--ignore-missing-imports]
-        files: ^(packages/|docs|conftest.py|src/tests)
-        exclude: (^packages/.*/setup.py|/src)
-        additional_dependencies: *mypy-deps
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: "v14.0.3"
+    rev: "v19.1.6"
     hooks:
       - id: clang-format
         types_or: [c++, c, cuda]
 
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: "v2.6.2"
-    hooks:
-      - id: prettier
-
   - repo: https://github.com/pre-commit/pygrep-hooks
-    rev: "v1.9.0"
+    rev: "v1.10.0"
     hooks:
-      - id: python-check-blanket-noqa
-      - id: python-check-blanket-type-ignore
-      - id: python-no-log-warn
-      - id: python-no-eval
-        exclude: ^(src/py/_pyodide/_base\.py|src/tests/test_typeconversions\.py|src/py/pyodide/_run_js.py)$
       - id: python-use-type-annotations
         exclude: docs/sphinx_pyodide/tests/test_directives\.py
       - id: rst-backticks
@@ -93,13 +39,56 @@ repos:
       - id: rst-inline-touching-normal
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: "v0.8.0.4"
+    rev: "v0.10.0.1"
     hooks:
       - id: shellcheck
+        exclude: ^src/templates/python$
 
   - repo: https://github.com/codespell-project/codespell
-    rev: "v2.1.0"
+    rev: "v2.3.0"
     hooks:
       - id: codespell
-        args: ["-L", "te,slowy,aray,ba,nd,classs,feld"]
-        exclude: ^benchmark/benchmarks/pystone_benchmarks/pystone\.py$
+        args:
+          [
+            "--ignore-words-list",
+            "ags,aray,asend,ba,crate,falsy,feld,inflight,lits,nd,slowy,te,oint,conveniant,atmost",
+          ]
+        exclude: ^(benchmark/benchmarks/pystone_benchmarks/pystone\.py|src/js/package-lock\.json|packages/matplotlib/extras/fontlist\.json)$
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: "v1.14.1"
+    hooks:
+      - id: mypy
+        files: ^(packages/.*/src|src|pyodide-build/pyodide_build)
+        exclude: (setup.py|.*test.*)
+        args: []
+        additional_dependencies: &mypy-deps
+          - packaging
+          - types-docutils
+          - types-pyyaml
+          - types-setuptools
+          - types-requests
+          - numpy
+          - build
+          - pytest
+          - pydantic>=2.0
+          - unearth
+          - resolvelib
+          - rich
+          - auditwheel_emscripten
+          - pyodide-lock==0.1.0a5
+          - micropip
+      - id: mypy
+        name: mypy-tests
+        args: [--ignore-missing-imports]
+        files: ^(packages/|docs|/conftest.py|src/tests)
+        exclude: (^packages/.*/setup.py|/src)
+        additional_dependencies: *mypy-deps
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: "v4.0.0-alpha.8"
+    hooks:
+      - id: prettier
+
+ci:
+  autoupdate_schedule: "quarterly"

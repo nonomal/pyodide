@@ -3,23 +3,23 @@
 export PYODIDE_ROOT=$(abspath ..)
 include ../Makefile.envs
 
-ifeq ($(strip $(PYODIDE_PACKAGES)),)
+all:
+ifeq ($(ENABLE_PREBUILT_PACKAGES),1)
+	@date +"[%F %T] using prebuilt packages..."
+	wget -q -O - $(PYODIDE_PREBUILT_PACKAGES_URL) | tar -xz -C $(PYODIDE_ROOT)/dist
 else
-	ONLY_PACKAGES=--only "$(PYODIDE_PACKAGES)"
+	pyodide build-recipes "$(PYODIDE_PACKAGES)" \
+		--install \
+		--metadata-files \
+		--n-jobs $${PYODIDE_JOBS:-4} \
+		--log-dir=./build-logs \
+		--compression-level "$(PYODIDE_ZIP_COMPRESSION_LEVEL)"
 endif
 
-all: pyodide-build
-	mkdir -p $(HOSTINSTALLDIR) $(WASM_LIBRARY_DIR)
-	PYODIDE_ROOT=$(PYODIDE_ROOT) python -m pyodide_build buildall . $(PYODIDE_ROOT)/dist \
-	$(ONLY_PACKAGES) --n-jobs $${PYODIDE_JOBS:-4} \
-	--log-dir=./build-logs
-
-pyodide-build: ../pyodide-build/pyodide_build/**
-	$(HOSTPYTHON) -m pip install -e ../pyodide-build
 
 update-all:
 	for pkg in $$(find . -maxdepth 1 ! -name ".*" -type d -exec basename {} \; | tail -n +2); do \
-		PYODIDE_ROOT=$(PYODIDE_ROOT) python -m pyodide_build mkpkg "$${pkg}" --update; \
+		PYODIDE_ROOT=$(PYODIDE_ROOT) pyodide skeleton pypi "$${pkg}" --update-patched; \
 	done
 
 clean:

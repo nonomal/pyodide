@@ -1,18 +1,16 @@
+import json
 import pathlib
-import sys
+import re
+import subprocess
 from typing import Any
+from urllib.request import urlopen
 
 from docutils import nodes
 from docutils.parsers.rst import Directive
+from pyodide_lock import PackageSpec, PyodideLockSpec
 from sphinx import addnodes
 
 base_dir = pathlib.Path(__file__).resolve().parents[3]
-sys.path.append(str(base_dir / "pyodide-build"))
-
-from pyodide_build.io import parse_package_config
-
-PYODIDE_TESTONLY = "pyodide.test"
-PYODIDE_STDLIB = "pyodide.stdlib"
 
 
 def get_packages_summary_directive(app):
@@ -22,52 +20,63 @@ def get_packages_summary_directive(app):
         required_arguments = 1
 
         def run(self):
-            packages_root = base_dir / self.arguments[0]
-            packages_list = self.get_package_metadata_list(packages_root)
+            url = self.parse_lockfile_url()
+            resp = urlopen(url)
+            lockfile_json = resp.read().decode("utf-8")
 
-            packages = {}
-            for package in packages_list:
-                name, version, is_library, tag = self.parse_package_info(package)
+            lockfile = PyodideLockSpec(**json.loads(lockfile_json))
+            lockfile_packages = lockfile.packages
 
-                # skip libraries (e.g. libxml, libyaml, ...) and test only packages
-                if is_library or tag == PYODIDE_TESTONLY:
+            python_packages = {}
+            for package in lockfile_packages.values():
+                try:
+                    name, version, is_package = self.parse_package_info(package)
+                except Exception:
+                    print(f"Warning: failed to parse package config for {package}")
+
+                if not is_package or name.endswith("-tests"):
                     continue
 
-                if tag == PYODIDE_STDLIB:
-                    version = "Pyodide standard library"
-
-                packages[name] = {
+                python_packages[name] = {
                     "name": name,
                     "version": version,
                 }
 
             result = []
             columns = ("name", "version")
-            table_markup = self.format_packages_table(packages, columns)
+            table_markup = self.format_packages_table(python_packages, columns)
             result.extend(table_markup)
 
             return result
 
-        def parse_package_info(
-            self, config: pathlib.Path
-        ) -> tuple[str, str, bool, str]:
-            yaml_data = parse_package_config(config)
-
-            name = yaml_data["package"]["name"]
-            version = yaml_data["package"]["version"]
-            tag = yaml_data["package"].get("_tag", "")
-            is_library = yaml_data.get("build", {}).get("library", False)
-
-            return name, version, is_library, tag
-
-        def get_package_metadata_list(
-            self, directory: pathlib.Path
-        ) -> list[pathlib.Path]:
-            """Return metadata files of packages in alphabetical order (case insensitive)"""
-            return sorted(
-                directory.glob("**/meta.yaml"),
-                key=lambda path: path.parent.name.lower(),
+        def parse_lockfile_url(self) -> str:
+            envs = subprocess.run(
+                ["make", "-f", str(base_dir / "Makefile.envs"), ".output_vars"],
+                capture_output=True,
+                text=True,
+                env={"PYODIDE_ROOT": str(base_dir)},
+                check=False,
             )
+
+            if envs.returncode != 0:
+                raise RuntimeError("Failed to parse Makefile.envs")
+
+            pattern = re.search(r"PYODIDE_PREBUILT_PACKAGES_LOCKFILE=(.*)", envs.stdout)
+            if not pattern:
+                raise RuntimeError("Failed to find lockfile URL in Makefile.envs")
+
+            url = pattern.group(1)
+            return url
+
+        def parse_package_info(
+            self,
+            package: PackageSpec,
+        ) -> tuple[str, str, bool]:
+            name = package.name
+            version = package.version
+            is_package = package.package_type == "package"
+
+            return name, version, is_package
 
         def format_packages_table(
             self, packages: dict[str, Any], columns: tuple[str, ...]

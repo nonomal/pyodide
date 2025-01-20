@@ -36,7 +36,6 @@ def generate_largish_json(n_rows: int = 91746) -> dict[str, Any]:
 
 @pytest.mark.driver_timeout(30)
 def test_extra_import(selenium, request):
-
     selenium.load_package("pandas")
     selenium.run("from pandas import Series, DataFrame")
 
@@ -56,18 +55,18 @@ def test_load_largish_file(selenium_standalone, request, httpserver):
 
     data = generate_largish_json(n_rows)
 
-    httpserver.expect_request("/data").respond_with_json(
+    httpserver.expect_oneshot_request("/pandas_largish").respond_with_json(
         data, headers={"Access-Control-Allow-Origin": "*"}
     )
-    request_url = httpserver.url_for("/data")
+    request_url = httpserver.url_for("/pandas_largish")
 
     selenium.run(
         f"""
-        import pyodide
+        import pyodide.http
         import matplotlib.pyplot as plt
         import pandas as pd
 
-        df = pd.read_json(pyodide.open_url('{request_url}'))
+        df = pd.read_json(pyodide.http.open_url('{request_url}'))
         assert df.shape == ({n_rows}, 8)
         """
     )

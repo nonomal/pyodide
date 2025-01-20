@@ -1,5 +1,5 @@
 import pytest
-from pyodide_test_runner import run_in_pyodide
+from pytest_pyodide import run_in_pyodide
 
 
 @pytest.mark.xfail_browsers(
@@ -38,7 +38,6 @@ def test_blosc(selenium_standalone):
             assert_array_almost_equal(arr, res, decimal=precision)
 
     def check_encode_decode(arr, codec, precision=None):
-
         # N.B., watch out here with blosc compressor, if the itemsize of
         # the source buffer is different then the results of encoding
         # (i.e., compression) may be different. Hence we *do not* require that
@@ -124,12 +123,8 @@ def test_blosc(selenium_standalone):
         np.random.randint(-(2**63), -(2**63) + 20, size=1000, dtype="i8").view(
             "m8[ns]"
         ),
-        np.random.randint(-(2**63), -(2**63) + 20, size=1000, dtype="i8").view(
-            "M8[m]"
-        ),
-        np.random.randint(-(2**63), -(2**63) + 20, size=1000, dtype="i8").view(
-            "m8[m]"
-        ),
+        np.random.randint(-(2**63), -(2**63) + 20, size=1000, dtype="i8").view("M8[m]"),
+        np.random.randint(-(2**63), -(2**63) + 20, size=1000, dtype="i8").view("m8[m]"),
     ]
 
     codecs = [

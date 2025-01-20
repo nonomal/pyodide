@@ -1,4 +1,4 @@
-from pyodide_test_runner import run_in_pyodide
+from pytest_pyodide import run_in_pyodide
 
 
 @run_in_pyodide(
@@ -23,6 +23,7 @@ def test_pillow(selenium):
         "jpeg": b"\xff\xd8\xff\xe0",
         "png": b"\x89PNG",
         "webp": b"RIFF",
+        "tiff": b"\x49\x49\x2a\x00",
     }
 
     for ext, signature in extensions.items():
@@ -30,9 +31,9 @@ def test_pillow(selenium):
             img.save(imgfile, format=ext.upper())
             _img = Image.open(imgfile)
             assert _img
-            assert (
-                imgfile.getvalue()[:4] == signature
-            ), f"Wrong signature on image format: {ext}"
+            assert imgfile.getvalue()[:4] == signature, (
+                f"Wrong signature on image format: {ext}"
+            )
 
 
 @run_in_pyodide(

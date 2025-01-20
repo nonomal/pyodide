@@ -1,36 +1,59 @@
 # See also test_pyproxy, test_jsproxy, and test_python.
+import io
+import pickle
 from typing import Any
 
 import pytest
-from hypothesis import given, strategies
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 from hypothesis.strategies import text
-from pyodide_test_runner import run_in_pyodide
-from pyodide_test_runner.fixture import selenium_context_manager
-from pyodide_test_runner.hypothesis import (
+from pytest_pyodide import run_in_pyodide
+from pytest_pyodide.fixture import selenium_context_manager
+from pytest_pyodide.hypothesis import (
     any_equal_to_self_strategy,
     any_strategy,
     std_hypothesis_settings,
 )
 
 
+class NoHypothesisUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        # Only allow safe classes from builtins.
+        if module == "hypothesis":
+            raise pickle.UnpicklingError()
+        return super().find_class(module, name)
+
+
+def no_hypothesis(x):
+    try:
+        NoHypothesisUnpickler(io.BytesIO(pickle.dumps(x))).load()
+        return True
+    except Exception:
+        return False
+
+
 @given(s=text())
-@std_hypothesis_settings
+@settings(deadline=10000)
+@example("\ufeff")
 def test_string_conversion(selenium_module_scope, s):
     @run_in_pyodide
     def main(selenium, sbytes):
-        from pyodide import run_js
+        from pyodide.code import run_js
+
+        run_js("self.encoder = new TextEncoder()")
+        run_js("self.decoder = new TextDecoder('utf8', {ignoreBOM: true})")
 
         spy = bytes(sbytes).decode()
         sjs = run_js(
             """
             (sbytes) => {
-                self.sjs = (new TextDecoder("utf8")).decode(new Uint8Array(sbytes));
+                self.sjs = self.decoder.decode(new Uint8Array(sbytes));
                 return sjs;
             }
             """
         )(sbytes)
         assert sjs == spy
-        assert run_js("""(spy) => spy === self.sjs""")(spy)
+        assert run_js("(spy) => spy === self.sjs")(spy)
 
     with selenium_context_manager(selenium_module_scope) as selenium:
         sbytes = list(s.encode())
@@ -39,16 +62,20 @@ def test_string_conversion(selenium_module_scope, s):
 
 @given(s=text())
 @std_hypothesis_settings
+@example("\ufeff")
 @run_in_pyodide
 def test_string_conversion2(selenium, s):
-    from pyodide import run_js
+    from pyodide.code import run_js
+
+    run_js("self.encoder = new TextEncoder()")
+    run_js("self.decoder = new TextDecoder('utf8', {ignoreBOM: true})")
 
     s_encoded = s.encode()
     sjs = run_js(
         """
         (s_encoded) => {
             let buf = s_encoded.getBuffer();
-            self.sjs = (new TextDecoder("utf8")).decode(buf.data);
+            self.sjs = self.decoder.decode(buf.data);
             buf.release();
             return sjs
         }
@@ -58,9 +85,47 @@ def test_string_conversion2(selenium, s):
     assert run_js("""(spy) => spy === self.sjs""")(s)
 
 
+def blns():
+    import base64
+    import json
+
+    with open("./src/tests/blns.base64.json") as f:
+        BLNS = json.load(f)
+    for s in BLNS:
+        yield base64.b64decode(s).decode(errors="ignore")
+
+
+@pytest.mark.driver_timeout(60)
+def test_string_conversion_blns(selenium):
+    @run_in_pyodide
+    def _string_conversion_blns_internal(selenium, s):
+        from pyodide.code import run_js
+
+        run_js("self.encoder = new TextEncoder()")
+        run_js("self.decoder = new TextDecoder('utf8', {ignoreBOM: true})")
+
+        s_encoded = s.encode()
+        sjs = run_js(
+            """
+            (s_encoded) => {
+                let buf = s_encoded.getBuffer();
+                self.sjs = self.decoder.decode(buf.data);
+                buf.release();
+                return sjs
+            }
+            """
+        )(s_encoded)
+        assert sjs == s
+        assert run_js("""(spy) => spy === self.sjs""")(s)
+
+    strings = blns()
+    for s in strings:
+        _string_conversion_blns_internal(selenium, s)
+
+
 @run_in_pyodide
 def test_large_string_conversion(selenium):
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     longstr = run_js('"ab".repeat(200_000)')
     res = longstr.count("ab")
@@ -78,38 +143,82 @@ def test_large_string_conversion(selenium):
 
 
 @given(
-    n=strategies.one_of(
-        strategies.integers(min_value=-(2**53), max_value=2**53),
-        strategies.floats(allow_nan=False),
+    n=st.one_of(
+        st.integers(),
+        st.floats(allow_nan=False),
     )
 )
 @std_hypothesis_settings
+@example(2**53)
+@example(2**53 - 1)
+@example(2**53 + 1)
+@example(-(2**53))
+@example(-(2**53) - 1)
+@example(-(2**53) + 1)
+@run_in_pyodide
 def test_number_conversions(selenium_module_scope, n):
-    with selenium_context_manager(selenium_module_scope) as selenium:
-        import json
+    import json
 
-        s = json.dumps(n)
-        selenium.run_js(
-            f"""
-            self.x_js = eval({s!r}); // JSON.parse apparently doesn't work
-            pyodide.runPython(`
-                import json
-                x_py = json.loads({s!r})
-            `);
-            """
-        )
-        assert selenium.run_js("""return pyodide.runPython('x_py') === x_js;""")
-        assert selenium.run(
-            """
-            from js import x_js
-            x_js == x_py
-            """
-        )
+    from pyodide.code import run_js
+
+    x_js = run_js("(s) => self.x_js = eval(s)")(json.dumps(n))
+    run_js("(x_py) => Number(x_py) === x_js")(n)
+
+    if isinstance(x_js, float):
+        assert x_js == float(n)
+    else:
+        assert x_js == n
+
+
+@given(n=st.floats())
+@std_hypothesis_settings
+@run_in_pyodide
+def test_number_conversions_2(selenium_module_scope, n):
+    from pyodide.code import run_js
+
+    assert run_js("(n) => typeof n")(n) == "number"
+    from math import isinf, isnan
+
+    if isnan(n):
+        return
+    import json
+
+    n_js = run_js("(s) => eval(s)")(json.dumps(n))
+    if not isinf(n) and float(int(n)) == n and -(2**53) < n < 2**53:
+        assert isinstance(n_js, int)
+    else:
+        assert isinstance(n_js, float)
+
+
+@given(n=st.integers())
+@std_hypothesis_settings
+@example(2**53)
+@example(2**53 - 1)
+@example(2**53 + 1)
+@example(-(2**53))
+@example(-(2**53) - 1)
+@example(-(2**53) + 1)
+@run_in_pyodide
+def test_number_conversions_3(selenium_module_scope, n):
+    from pyodide.code import run_js
+
+    jsty = run_js("(n) => typeof n")(n)
+    if -(2**53) + 1 < n < 2**53 - 1:
+        assert jsty == "number"
+    else:
+        assert jsty == "bigint"
+    import json
+
+    n_js = run_js("(s) => eval(s)")(json.dumps(n))
+    if -(2**53) < n < 2**53:
+        assert isinstance(n_js, int)
+    else:
+        assert isinstance(n_js, float)
 
 
 @run_in_pyodide
 def test_nan_conversions(selenium):
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     jsnan = run_js("NaN")
     from math import isnan
@@ -125,7 +234,7 @@ def test_nan_conversions(selenium):
     )
 
 
-@given(n=strategies.integers())
+@given(n=st.integers())
 @std_hypothesis_settings
 def test_bigint_conversions(selenium_module_scope, n):
     with selenium_context_manager(selenium_module_scope) as selenium:
@@ -162,9 +271,9 @@ def test_bigint_conversions(selenium_module_scope, n):
 
 
 @given(
-    n=strategies.one_of(
-        strategies.integers(min_value=2**53 + 1),
-        strategies.integers(max_value=-(2**53) - 1),
+    n=st.one_of(
+        st.integers(min_value=2**53 + 1),
+        st.integers(max_value=-(2**53) - 1),
     )
 )
 @std_hypothesis_settings
@@ -173,7 +282,7 @@ def test_big_int_conversions2(selenium_module_scope, n):
     def main(selenium, s):
         import json
 
-        from pyodide import run_js
+        from pyodide.code import run_js
 
         x_py = json.loads(s)
         x_js, check = run_js(
@@ -196,8 +305,8 @@ def test_big_int_conversions2(selenium_module_scope, n):
 
 
 @given(
-    n=strategies.integers(),
-    exp=strategies.integers(min_value=1, max_value=10),
+    n=st.integers(),
+    exp=st.integers(min_value=1, max_value=10),
 )
 @std_hypothesis_settings
 def test_big_int_conversions3(selenium_module_scope, n, exp):
@@ -205,10 +314,10 @@ def test_big_int_conversions3(selenium_module_scope, n, exp):
     def main(selenium, s):
         import json
 
-        from pyodide import run_js
+        from pyodide.code import run_js
 
         x_py = json.loads(s)
-        run_js(
+        x_js = run_js(
             f"""
             self.x_js = eval('{s}n'); // JSON.parse apparently doesn't work
             """
@@ -219,7 +328,6 @@ def test_big_int_conversions3(selenium_module_scope, n, exp):
             """
         )(x_py)
         assert x1 == x2
-        from js import x_js
 
         check = run_js(
             """
@@ -239,19 +347,18 @@ def test_big_int_conversions3(selenium_module_scope, n, exp):
         main(selenium, s)
 
 
-@given(obj=any_equal_to_self_strategy)
+@given(obj=any_equal_to_self_strategy.filter(no_hypothesis))
 @std_hypothesis_settings
 @run_in_pyodide
 def test_hyp_py2js2py(selenium, obj):
     import __main__
-
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     __main__.obj = obj
 
     try:
         run_js('self.obj2 = pyodide.globals.get("obj"); 0;')
-        from js import obj2
+        from js import obj2  # type:ignore[attr-defined]
 
         assert obj2 == obj
         run_js(
@@ -266,13 +373,12 @@ def test_hyp_py2js2py(selenium, obj):
         del __main__.obj
 
 
-@given(obj=any_equal_to_self_strategy)
+@given(obj=any_equal_to_self_strategy.filter(no_hypothesis))
 @std_hypothesis_settings
 @run_in_pyodide
 def test_hyp_py2js2py_2(selenium, obj):
     import __main__
-
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     __main__.o = obj
     try:
@@ -285,8 +391,7 @@ def test_hyp_py2js2py_2(selenium, obj):
 @run_in_pyodide
 def test_big_integer_py2js2py(selenium, a):
     import __main__
-
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     __main__.a = a
     try:
@@ -299,13 +404,12 @@ def test_big_integer_py2js2py(selenium, a):
 # Generate an object of any type
 @pytest.mark.skip_refcount_check
 @pytest.mark.skip_pyproxy_check
-@given(obj=any_strategy)
+@given(obj=any_strategy.filter(no_hypothesis))
 @std_hypothesis_settings
 @run_in_pyodide
 def test_hyp_tojs_no_crash(selenium, obj):
     import __main__
-
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     __main__.x = obj
     try:
@@ -319,6 +423,21 @@ def test_hyp_tojs_no_crash(selenium, obj):
         )
     finally:
         del __main__.x
+
+
+@pytest.mark.skip_refcount_check
+@pytest.mark.skip_pyproxy_check
+@given(obj=any_strategy.filter(no_hypothesis))
+@example(obj=range(0, 2147483648))  # length is too big to fit in ssize_t
+@settings(
+    std_hypothesis_settings,
+    max_examples=25,
+)
+@run_in_pyodide
+def test_hypothesis(selenium_standalone, obj):
+    from pyodide.ffi import to_js
+
+    to_js(obj)
 
 
 @pytest.mark.parametrize(
@@ -339,7 +458,7 @@ def test_hyp_tojs_no_crash(selenium, obj):
 )
 @run_in_pyodide
 def test_python2js1(selenium, py, js):
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     assert run_js(
         f"""
@@ -348,53 +467,79 @@ def test_python2js1(selenium, py, js):
     )(py)
 
 
+@run_in_pyodide
 def test_python2js2(selenium):
-    assert selenium.run_js(
-        """
-        let xpy = pyodide.runPython("b'bytes'");
-        let x = xpy.toJs();
-        xpy.destroy();
-        return (x.constructor.name === "Uint8Array") &&
-               (x.length === 5) &&
-               (x[0] === 98)
-        """
-    )
+    from pyodide.code import run_js
+
+    assert list(
+        run_js(
+            """
+                (x) => {
+                    x = x.toJs();
+                    return [x.constructor.name, x.length, x[0]];
+                }
+                """
+        )(b"bytes")
+    ) == ["Uint8Array", 5, 98]
 
 
+@run_in_pyodide
 def test_python2js3(selenium):
-    assert selenium.run_js(
+    from pyodide.code import run_js
+
+    l = [7, 9, 13]
+    result = run_js(
         """
-        let proxy = pyodide.runPython("[1, 2, 3]");
-        let typename = proxy.type;
-        let x = proxy.toJs();
-        proxy.destroy();
-        return ((typename === "list") && (x.constructor.name === "Array") &&
-                (x.length === 3) && (x[0] == 1) && (x[1] == 2) && (x[2] == 3));
+        (proxy) => {
+            x = proxy.toJs();
+            return [proxy.type, x.constructor.name, x.length, x[0], x[1], x[2]]
+        }
         """
-    )
+    )(l)
+    assert list(result) == ["list", "Array", 3, *l]
 
 
+@run_in_pyodide
 def test_python2js4(selenium):
-    assert selenium.run_js(
-        """
-        let proxy = pyodide.runPython("{42: 64}");
-        let typename = proxy.type;
-        let x = proxy.toJs();
-        proxy.destroy();
-        return (typename === "dict") && (x.constructor.name === "Map") && (x.get(42) === 64);
-        """
-    )
+    from pyodide.code import run_js
+
+    assert list(
+        run_js(
+            """
+                (proxy) => {
+                    let typename = proxy.type;
+                    let x = proxy.toJs();
+                    return [proxy.type, x.constructor.name, x.get(42)];
+                }
+                """
+        )({42: 64})
+    ) == ["dict", "LiteralMap", 64]
 
 
+@run_in_pyodide
 def test_python2js5(selenium):
-    assert selenium.run_js(
-        """
-        let x = pyodide.runPython("open('/foo.txt', 'wb')")
-        let result = x.tell();
-        x.destroy();
-        return result === 0;
-        """
-    )
+    from pyodide.code import run_js
+
+    assert run_js("(x) => x.tell()")(open("/foo.txt", "wb")) == 0
+
+    from tempfile import TemporaryFile
+
+    with TemporaryFile(mode="w+") as f:
+        contents = ["a\n", "b\n", "hello there!\n"]
+        f.writelines(contents)
+        assert run_js("(f) => f.tell()")(f) == 17
+
+        assert (
+            run_js(
+                """
+                (f) => {
+                    f.seek(0);
+                    return [f.readline(), f.readline(), f.readline()];
+                }
+                """
+            )(f).to_py()
+            == contents
+        )
 
 
 def test_python2js_track_proxies(selenium):
@@ -413,15 +558,15 @@ def test_python2js_track_proxies(selenium):
         }
         function check(l){
             for(let x of l){
-                if(pyodide.isPyProxy(x)){
-                    assert(() => x.$$.ptr === 0);
+                if(x instanceof pyodide.ffi.PyProxy){
+                    assert(() => !pyodide._api.pyproxyIsAlive(x));
                 } else {
                     check(x);
                 }
             }
         }
         check(result);
-        assertThrows(() => x.toJs({create_pyproxies : false}), "PythonError", "pyodide.ConversionError");
+        assertThrows(() => x.toJs({create_pyproxies : false}), "PythonError", "pyodide.ffi.ConversionError");
         x.destroy();
         """
     )
@@ -429,15 +574,14 @@ def test_python2js_track_proxies(selenium):
 
 @run_in_pyodide
 def test_wrong_way_track_proxies(selenium):
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     checkDestroyed = run_js(
         """
         function checkDestroyed(l){
             for(let e of l){
-                if(pyodide.isPyProxy(e)){
-                    console.log("\\n\\n", "!!!!!!!!!", e.$$.ptr);
-                    assert(() => e.$$.ptr === 0);
+                if(e instanceof pyodide.ffi.PyProxy){
+                    assert(() => !pyodide._api.pyproxyIsAlive(e));
                 } else {
                     checkDestroyed(e);
                 }
@@ -449,7 +593,7 @@ def test_wrong_way_track_proxies(selenium):
     from unittest import TestCase
 
     from js import Array, Object
-    from pyodide import ConversionError, destroy_proxies, to_js
+    from pyodide.ffi import ConversionError, destroy_proxies, to_js
 
     raises = TestCase().assertRaises
 
@@ -463,14 +607,14 @@ def test_wrong_way_track_proxies(selenium):
     destroy_proxies(proxylist)
     checkDestroyed(r)
     with raises(TypeError):
-        to_js(x, pyproxies=[])
+        to_js(x, pyproxies=[])  # type:ignore[call-overload]
     with raises(TypeError):
         to_js(x, pyproxies=Object.new())
     with raises(ConversionError):
         to_js(x, create_pyproxies=False)
 
 
-def test_wrong_way_conversions(selenium):
+def test_wrong_way_conversions1(selenium):
     selenium.run_js(
         """
         assert(() => pyodide.toPy(5) === 5);
@@ -494,100 +638,131 @@ def test_wrong_way_conversions(selenium):
         """
     )
 
-    selenium.run_js(
+
+@run_in_pyodide
+def test_wrong_way_conversions2(selenium):
+    from pyodide.code import run_js
+    from pyodide.ffi import to_js
+
+    [astr, bstr] = run_js(
         """
-        self.a = [1,2,3];
-        self.b = pyodide.runPython(`
-            import pyodide
-            pyodide.to_js([1, 2, 3])
-        `);
-        assert(() => JSON.stringify(a) == JSON.stringify(b));
+        (a) => {
+            b = [1,2,3];
+            return [JSON.stringify(a), JSON.stringify(b)]
+        }
         """
-    )
+    )(to_js([1, 2, 3]))
+    assert astr == bstr
 
-    selenium.run_js(
+
+@run_in_pyodide
+def test_wrong_way_conversions3(selenium):
+    from pyodide.code import run_js
+    from pyodide.ffi import to_js
+
+    class Test:
+        pass
+
+    t1 = Test()
+    t2 = to_js(t1)
+    t3 = run_js("(t2) => t2.copy()")(t2)
+
+    assert t1 is t3
+    t2.destroy()
+
+
+@run_in_pyodide
+def test_wrong_way_conversions4(selenium):
+    from pyodide.ffi import to_js
+
+    s = "avafhjpa"
+    t = 55
+    assert to_js(s) is s
+    assert to_js(t) is t
+
+
+@run_in_pyodide
+def test_dict_converter1(selenium):
+    import json
+
+    from pyodide.code import run_js
+    from pyodide.ffi import to_js
+
+    arrayFrom = run_js("Array.from")
+    d = {x: x + 2 for x in range(5)}
+    res = to_js(d, dict_converter=arrayFrom)
+    constructor, serialized = run_js(
         """
-        self.t3 = pyodide.runPython(`
-            class Test: pass
-            t1 = Test()
-            t2 = pyodide.to_js(t1)
-            t2
-        `);
-        pyodide.runPython(`
-            from js import t3
-            assert t1 is t3
-            t2.destroy();
-        `);
+        (res) => {
+            return [res.constructor.name, JSON.stringify(res)];
+        }
         """
-    )
+    )(res)
 
-    selenium.run_js(
+    assert constructor == "Array"
+    assert json.loads(serialized) == [list(x) for x in d.items()]
+
+
+@run_in_pyodide
+def test_dict_converter2(selenium):
+    import json
+
+    from pyodide.code import run_js
+
+    d = {x: x + 2 for x in range(5)}
+    constructor, serialized = run_js(
         """
-        pyodide.runPython(`
-            s = "avafhjpa"
-            t = 55
-            assert pyodide.to_js(s) is s
-            assert pyodide.to_js(t) is t
-        `);
+        (d) => {
+            const res = d.toJs({dict_converter : Array.from});
+            return [res.constructor.name, JSON.stringify(res)];
+        }
         """
-    )
+    )(d)
+
+    assert constructor == "Array"
+    assert json.loads(serialized) == [list(x) for x in d.items()]
 
 
-def test_dict_converter(selenium):
-    assert (
-        selenium.run_js(
-            """
-            self.arrayFrom = Array.from;
-            return pyodide.runPython(`
-                from js import arrayFrom
-                from pyodide import to_js
-                res = to_js({ x : x + 2 for x in range(5)}, dict_converter=arrayFrom)
-                res
-            `)
-            """
-        )
-        == [[0, 2], [1, 3], [2, 4], [3, 5], [4, 6]]
-    )
+@run_in_pyodide
+def test_dict_converter3(selenium):
+    import json
 
-    assert (
-        selenium.run_js(
-            """
-            let px = pyodide.runPython("{ x : x + 2 for x in range(5)}");
-            let result = px.toJs({dict_converter : Array.from});
-            px.destroy();
-            return result;
-            """
-        )
-        == [[0, 2], [1, 3], [2, 4], [3, 5], [4, 6]]
-    )
+    from js import Object
+    from pyodide.code import run_js
+    from pyodide.ffi import to_js
 
-    assert (
-        selenium.run_js(
-            """
-            return pyodide.runPython(`
-                from js import Object
-                from pyodide import to_js
-                res = to_js({ x : x + 2 for x in range(5)}, dict_converter=Object.fromEntries)
-                res
-            `);
-            """
-        )
-        == {"0": 2, "1": 3, "2": 4, "3": 5, "4": 6}
-    )
+    d = {x: x + 2 for x in range(5)}
 
-    assert (
-        selenium.run_js(
-            """
-            let px = pyodide.runPython("{ x : x + 2 for x in range(5)}");
-            let result = px.toJs({dict_converter : Object.fromEntries});
-            px.destroy();
-            return result;
-            """
-        )
-        == {"0": 2, "1": 3, "2": 4, "3": 5, "4": 6}
-    )
+    res = to_js(d, dict_converter=Object.fromEntries)
+    constructor, serialized = run_js(
+        """
+        (res) => [res.constructor.name, JSON.stringify(res)]
+        """
+    )(res)
 
-    selenium.run("del res; del arrayFrom; del Object")
+    assert constructor == "Object"
+    assert json.loads(serialized) == {str(k): v for k, v in d.items()}
+
+
+@run_in_pyodide
+def test_dict_converter4(selenium):
+    import json
+
+    from pyodide.code import run_js
+
+    d = {x: x + 2 for x in range(5)}
+
+    constructor, serialized = run_js(
+        """
+        (px) => {
+            let res = px.toJs({dict_converter : Object.fromEntries});
+            return [res.constructor.name, JSON.stringify(res)];
+        }
+        """
+    )(d)
+
+    assert constructor == "Object"
+    assert json.loads(serialized) == {str(k): v for k, v in d.items()}
 
 
 @pytest.mark.parametrize(
@@ -598,17 +773,21 @@ def test_python2js_long_ints(selenium, formula):
     assert selenium.run(formula) == eval(formula)
 
 
+@run_in_pyodide
 def test_python2js_long_ints2(selenium):
-    assert selenium.run_js(
+    from pyodide.code import run_js
+
+    assert run_js(
         """
-        return pyodide.runPython("2**64") === 2n**64n;
+        (x) => x === 2n**64n;
         """
-    )
-    assert selenium.run_js(
+    )(2**64)
+
+    assert run_js(
         """
-        return pyodide.runPython("-(2**64)") === -(2n**64n);
+        (x) => x === -(2n**64n);
         """
-    )
+    )(-(2**64))
 
 
 def test_pythonexc2js(selenium):
@@ -617,10 +796,26 @@ def test_pythonexc2js(selenium):
         selenium.run_js('return pyodide.runPython("5 / 0")')
 
 
-def test_js2python(selenium):
-    selenium.run_js(
+@run_in_pyodide
+def test_js2python_null(selenium):
+    from pyodide.code import run_js
+
+    assert run_js("null") is None
+    assert run_js("[null]")[0] is None
+    assert run_js("() => null")() is None
+    assert run_js("({a: null})").a is None
+    assert run_js("new Map([['a', null]])")["a"] is None
+    assert run_js("[null, null, null]").to_py() == [None, None, None]
+    assert run_js("new Map([['a', null]])").to_py() == {"a": None}
+
+
+@run_in_pyodide
+def test_js2python_basic(selenium):
+    from pyodide.code import run_js
+
+    t = run_js(
         """
-        self.test_objects = {
+        ({
             jsstring_ucs1 : "pyodidé",
             jsstring_ucs2 : "碘化物",
             jsstring_ucs4 : "🐍",
@@ -636,61 +831,50 @@ def test_js2python(selenium):
             jsbytes : new Uint8Array([1, 2, 3]),
             jsfloats : new Float32Array([1, 2, 3]),
             jsobject : new TextDecoder(),
-        };
+        });
         """
     )
-    selenium.run("from js import test_objects as t")
-    assert selenium.run('t.jsstring_ucs1 == "pyodidé"')
-    assert selenium.run('t.jsstring_ucs2 == "碘化物"')
-    assert selenium.run('t.jsstring_ucs4 == "🐍"')
-    assert selenium.run("t.jsnumber0 == 42 and isinstance(t.jsnumber0, int)")
-    assert selenium.run("t.jsnumber1 == 42.5 and isinstance(t.jsnumber1, float)")
-    assert selenium.run("t.jsundefined is None")
-    assert selenium.run("t.jsnull is None")
-    assert selenium.run("t.jstrue is True")
-    assert selenium.run("t.jsfalse is False")
-    assert selenium.run("t.jspython is open")
-    assert selenium.run(
-        """
-        jsbytes = t.jsbytes.to_py()
-        ((jsbytes.tolist() == [1, 2, 3])
-         and (jsbytes.tobytes() == b"\x01\x02\x03"))
-        """
-    )
-    assert selenium.run(
-        """
-        jsfloats = t.jsfloats.to_py()
-        import struct
-        expected = struct.pack("fff", 1, 2, 3)
-        (jsfloats.tolist() == [1, 2, 3]) and (jsfloats.tobytes() == expected)
-        """
-    )
-    assert selenium.run('str(t.jsobject) == "[object TextDecoder]"')
-    assert selenium.run("bool(t.jsobject) == True")
-    assert selenium.run("bool(t.jsarray0) == False")
-    assert selenium.run("bool(t.jsarray1) == True")
-    selenium.run_js("test_objects.jspython.destroy()")
+    assert t.jsstring_ucs1 == "pyodidé"
+    assert t.jsstring_ucs2 == "碘化物"
+    assert t.jsstring_ucs4 == "🐍"
+    assert t.jsnumber0 == 42 and isinstance(t.jsnumber0, int)
+    assert t.jsnumber1 == 42.5 and isinstance(t.jsnumber1, float)
+    assert t.jsundefined is None
+    assert t.jsnull is None
+    assert t.jstrue is True
+    assert t.jsfalse is False
+    assert t.jspython is open
+
+    jsbytes = t.jsbytes.to_py()
+    assert (jsbytes.tolist() == [1, 2, 3]) and (jsbytes.tobytes() == b"\x01\x02\x03")
+
+    jsfloats = t.jsfloats.to_py()
+    import struct
+
+    expected = struct.pack("fff", 1, 2, 3)
+    assert (jsfloats.tolist() == [1, 2, 3]) and (jsfloats.tobytes() == expected)
+    assert str(t.jsobject) == "[object TextDecoder]"
+    assert bool(t.jsobject) is True
+    assert bool(t.jsarray0) is False
+    assert bool(t.jsarray1) is True
+    run_js("(t) => t.jspython.destroy()")(t)
 
 
-def test_js2python_bool(selenium):
-    selenium.run_js(
-        """
-        self.f = ()=>{}
-        self.m0 = new Map();
-        self.m1 = new Map([[0, 1]]);
-        self.s0 = new Set();
-        self.s1 = new Set([0]);
-        """
-    )
-    assert (
-        selenium.run(
-            """
-            from js import self, f, m0, m1, s0, s1
-            [bool(x) for x in [f, m0, m1, s0, s1]]
-            """
-        )
-        == [True, False, True, False, True]
-    )
+@pytest.mark.parametrize(
+    "jsval, is_truthy",
+    [
+        ("()=>{}", True),
+        ("new Map()", False),
+        ("new Map([[0, 1]])", True),
+        ("new Set()", False),
+        ("new Set([0])", True),
+    ],
+)
+@run_in_pyodide
+def test_js2python_bool(selenium, jsval, is_truthy):
+    from pyodide.code import run_js
+
+    assert bool(run_js(jsval)) is is_truthy
 
 
 @pytest.mark.parametrize(
@@ -709,7 +893,7 @@ def test_js2python_bool(selenium):
 )
 @run_in_pyodide
 def test_typed_arrays(selenium, jstype, pytype):
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     array = run_js(f"new {jstype}([1, 2, 3, 4]);").to_py()
     print(array.format, array.tolist(), array.tobytes())
@@ -722,7 +906,7 @@ def test_typed_arrays(selenium, jstype, pytype):
 
 @run_in_pyodide
 def test_array_buffer(selenium):
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     array = run_js("new ArrayBuffer(100);").to_py()
     assert len(array.tobytes()) == 100
@@ -756,7 +940,7 @@ def assert_py_to_js_to_py(selenium, name):
 def test_recursive_list_to_js(selenium):
     x: Any = []
     x.append(x)
-    from pyodide import to_js
+    from pyodide.ffi import to_js
 
     to_js(x)
 
@@ -765,9 +949,33 @@ def test_recursive_list_to_js(selenium):
 def test_recursive_dict_to_js(selenium):
     x: Any = {}
     x[0] = x
-    from pyodide import to_js
+    from pyodide.ffi import to_js
 
     to_js(x)
+
+
+@run_in_pyodide
+def test_dict_subclass_to_js(selenium):
+    """See issue #4636"""
+    from collections import ChainMap
+
+    from pyodide.code import run_js
+
+    j = run_js(
+        """
+        (d) => JSON.stringify(d.toJs({ dict_converter: Object.fromEntries }))
+        """
+    )
+
+    class D1(ChainMap, dict):  # type: ignore[misc, type-arg]
+        pass
+
+    class D2(dict, ChainMap):  # type: ignore[misc, type-arg]
+        pass
+
+    d = {"a": "b"}
+    assert eval(j(D1({"a": "b"}))) == d
+    assert eval(j(D2({"a": "b"}))) == d
 
 
 def test_list_js2py2js(selenium):
@@ -782,6 +990,10 @@ def test_dict_js2py2js(selenium):
 
 def test_error_js2py2js(selenium):
     selenium.run_js("self.err = new Error('hello there?');")
+    assert_js_to_py_to_js(selenium, "err")
+    if selenium.browser == "node":
+        return
+    selenium.run_js("self.err = new DOMException('hello there?');")
     assert_js_to_py_to_js(selenium, "err")
 
 
@@ -800,8 +1012,13 @@ def test_dict_py2js2py(selenium):
     assert_py_to_js_to_py(selenium, "x")
 
 
+@run_in_pyodide
 def test_jsproxy_attribute_error(selenium):
-    selenium.run_js(
+    import pytest
+
+    from pyodide.code import run_js
+
+    point = run_js(
         """
         class Point {
             constructor(x, y) {
@@ -809,25 +1026,19 @@ def test_jsproxy_attribute_error(selenium):
                 this.y = y;
             }
         }
-        self.point = new Point(42, 43);
+        new Point(42, 43);
         """
     )
-    selenium.run(
-        """
-        from js import point
-        assert point.y == 43
-        """
-    )
+    assert point.y == 43
 
-    msg = "AttributeError: z"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run("point.z")
+    with pytest.raises(AttributeError, match="z"):
+        point.z  # noqa: B018
 
-    selenium.run("del point.y")
-    msg = "AttributeError: y"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run("point.y")
-    assert selenium.run_js("return point.y;") is None
+    del point.y
+    with pytest.raises(AttributeError, match="y"):
+        point.y  # noqa: B018
+
+    assert run_js("(point) => point.y;")(point) is None
 
 
 def test_javascript_error(selenium):
@@ -845,7 +1056,7 @@ def test_javascript_error(selenium):
 
 @run_in_pyodide
 def test_javascript_error_back_to_js(selenium):
-    from pyodide import run_js
+    from pyodide.code import run_js
 
     err = run_js('self.err = new Error("This is a js error"); err')
     assert type(err).__name__ == "JsException"
@@ -884,66 +1095,56 @@ def test_memoryview_conversion(selenium):
 def test_python2js_with_depth(selenium):
     selenium.run_js(
         """
-        let x = pyodide.runPython(`
+        const x = pyodide.runPython(`
             class Test: pass
             [Test(), [Test(), [Test(), [Test()]]]]
         `);
-        let Module = pyodide._module;
-        let proxies = [];
-        let proxies_id = Module.hiwire.new_value(proxies);
-        let result = Module.hiwire.pop_value(Module._python2js_with_depth(x.$$.ptr, -1, proxies_id));
-        Module.hiwire.decref(proxies_id);
-
+        const Module = pyodide._module;
+        const proxies = [];
+        const result = Module._python2js_with_depth(Module.PyProxy_getPtr(x), -1, proxies);
         assert(() => proxies.length === 4);
-
-        let result_proxies = [result[0], result[1][0], result[1][1][0], result[1][1][1][0]];
-        proxies.sort((x, y) => x.$$.ptr < y.$$.ptr);
-        result_proxies.sort((x, y) => x.$$.ptr < y.$$.ptr);
+        const result_proxies = [result[0], result[1][0], result[1][1][0], result[1][1][1][0]];
+        const sortFunc = (x, y) => Module.PyProxy_getPtr(x) < Module.PyProxy_getPtr(y);
+        proxies.sort(sortFunc);
+        result_proxies.sort(sortFunc);
         for(let i = 0; i < 4; i++){
             assert(() => proxies[i] == result_proxies[i]);
         }
         x.destroy();
-        for(let px of proxies){
+        for(const px of proxies){
             px.destroy();
         }
-
         """
     )
 
 
-def test_tojs1(selenium):
-    assert selenium.run_js(
-        """
-        let respy = pyodide.runPython("[1, 2, 3]");
-        let res = respy.toJs();
-        respy.destroy();
-        return (Array.isArray(res)) && JSON.stringify(res) === "[1,2,3]";
-        """
-    )
+@pytest.mark.parametrize("ty", [list, tuple])
+@run_in_pyodide
+def test_tojs1(selenium, ty):
+    import json
+
+    from pyodide.code import run_js
+
+    l = [1, 2, 3]
+    x = ty(l)
+    assert run_js("x => Array.isArray(x.toJs())")(x)
+    serialized = run_js("x => JSON.stringify(x.toJs())")(x)
+    assert l == json.loads(serialized)
 
 
+@run_in_pyodide
 def test_tojs2(selenium):
-    assert selenium.run_js(
-        """
-        let respy = pyodide.runPython("(1, 2, 3)");
-        let res = respy.toJs();
-        respy.destroy();
-        return (Array.isArray(res)) && JSON.stringify(res) === "[1,2,3]";
-        """
-    )
+    import json
 
+    from pyodide.code import run_js
 
-def test_tojs3(selenium):
-    assert selenium.run_js(
-        """
-        let respy = pyodide.runPython("[(1,2), (3,4), [5, 6], { 2 : 3,  4 : 9}]")
-        let res = respy.toJs();
-        respy.destroy();
-        return Array.isArray(res) && \
-            JSON.stringify(res) === `[[1,2],[3,4],[5,6],{}]` && \
-            JSON.stringify(Array.from(res[3].entries())) === "[[2,3],[4,9]]";
-        """
-    )
+    o = [(1, 2), (3, 4), [5, 6], {"a": 1, 2: 3, 4: 9}]
+
+    assert run_js("(o) => Array.isArray(o.toJs())")(o)
+    serialized = run_js("(o) => JSON.stringify(o.toJs())")(o)
+    assert json.loads(serialized) == [[1, 2], [3, 4], [5, 6], {"a": 1}]
+    serialized = run_js("(o) => JSON.stringify(Array.from(o.toJs()[3].entries()))")(o)
+    assert json.loads(serialized) == [["a", 1], [2, 3], [4, 9]]
 
 
 def test_tojs4(selenium):
@@ -956,7 +1157,7 @@ def test_tojs4(selenium):
                 assert(() => Array.isArray(x), `i: ${i}, j: ${j}`);
                 x = x[1];
             }
-            assert(() => pyodide.isPyProxy(x), `i: ${i}, j: ${i}`);
+            assert(() => x instanceof pyodide.ffi.PyProxy, `i: ${i}, j: ${i}`);
             x.destroy();
         }
         a.destroy()
@@ -974,7 +1175,7 @@ def test_tojs5(selenium):
                 assert(() => Array.isArray(x), `i: ${i}, j: ${j}`);
                 x = x[1];
             }
-            assert(() => pyodide.isPyProxy(x), `i: ${i}, j: ${i}`);
+            assert(() => x instanceof pyodide.ffi.PyProxy, `i: ${i}, j: ${i}`);
             x.destroy();
         }
         a.destroy()
@@ -990,9 +1191,9 @@ def test_tojs6(selenium):
             b = [a, a, a, a, a]
             [b, b, b, b, b]
         `);
-        let total_refs = pyodide._module.hiwire.num_keys();
+        let total_refs = pyodide._module._hiwire_num_refs();
         let res = respy.toJs();
-        let new_total_refs = pyodide._module.hiwire.num_keys();
+        let new_total_refs = pyodide._module._hiwire_num_refs();
         respy.destroy();
         assert(() => total_refs === new_total_refs);
         assert(() => res[0] === res[1]);
@@ -1012,9 +1213,9 @@ def test_tojs7(selenium):
             a.append(b)
             a
         `);
-        let total_refs = pyodide._module.hiwire.num_keys();
+        let total_refs = pyodide._module._hiwire_num_refs();
         let res = respy.toJs();
-        let new_total_refs = pyodide._module.hiwire.num_keys();
+        let new_total_refs = pyodide._module._hiwire_num_refs();
         respy.destroy();
         assert(() => total_refs === new_total_refs);
         assert(() => res[0][0] === "b");
@@ -1030,7 +1231,7 @@ def test_tojs7(selenium):
 def test_tojs8(selenium):
     import pytest
 
-    from pyodide import ConversionError, to_js
+    from pyodide.ffi import ConversionError, to_js
 
     msg = r"Cannot use \(2, 2\) as a key for a Javascript"
     with pytest.raises(ConversionError, match=msg):
@@ -1041,50 +1242,86 @@ def test_tojs8(selenium):
 
 
 def test_tojs9(selenium):
-    assert (
-        set(
-            selenium.run_js(
-                """
-                return Array.from(pyodide.runPython(`
-                    from pyodide import to_js
-                    to_js({ 1, "1" })
-                `).values())
-                """
-            )
+    assert set(
+        selenium.run_js(
+            """
+            return Array.from(pyodide.runPython(`
+                from pyodide.ffi import to_js
+                to_js({ 1, "1" })
+            `).values())
+            """
         )
-        == {1, "1"}
-    )
+    ) == {1, "1"}
 
-    assert (
-        dict(
-            selenium.run_js(
-                """
-                return Array.from(pyodide.runPython(`
-                    from pyodide import to_js
-                    to_js({ 1 : 7, "1" : 9 })
-                `).entries())
-                """
-            )
+    assert dict(
+        selenium.run_js(
+            """
+            return Array.from(pyodide.runPython(`
+                from pyodide.ffi import to_js
+                to_js({ 1 : 7, "1" : 9 })
+            `).entries())
+            """
         )
-        == {1: 7, "1": 9}
-    )
+    ) == {1: 7, "1": 9}
 
 
-def test_to_py(selenium):
-    result = selenium.run_js(
+def test_tojs_literalmap(selenium):
+    selenium.run_js(
         """
-        self.a = new Map([[1, [1,2,new Set([1,2,3])]], [2, new Map([[1,2],[2,7]])]]);
+        const res = pyodide.runPython(`
+            from pyodide.ffi import to_js
+            to_js({ "a" : 6, "b" : 10, 6 : 9, "get": 77, True: 90})
+        `);
+
+        assert(() => res.constructor.name === "LiteralMap");
+        assert(() => "a" in res);
+        assert(() => "b" in res);
+        assert(() => !(6 in res));
+        assert(() => "get" in res);
+        assert(() => !(true in res));
+        assert(() => res.has("a"));
+        assert(() => res.has("b"));
+        assert(() => res.has(6));
+        assert(() => res.has("get"));
+        assert(() => res.has(true));
+        assert(() => res.a === 6);
+        assert(() => res.b === 10);
+        assert(() => res[6] === undefined);
+        assert(() => typeof res.get === "function");
+        assert(() => res[true] === undefined);
+        assert(() => res.get("a") === 6);
+        assert(() => res.get("b") === 10);
+        assert(() => res.get(6) === 9);
+        assert(() => res.get("get") === 77);
+        assert(() => res.get(true) === 90);
+        res.delete("a");
+        assert(() => !("a" in res));
+        assert(() => !res.has("a"));
+        res.a = 7;
+        assert(() => res.a === 7);
+        assert(() => res.get("a") === 7);
+        res.set("a", 99);
+        assert(() => res.get("a") === 99);
+        assert(() => res.a === 99);
+        delete res.a
+        assert(() => !("a" in res));
+        assert(() => !res.has("a"));
+        """
+    )
+
+
+@run_in_pyodide
+def test_to_py1(selenium):
+    from pyodide.code import run_js
+
+    a = run_js(
+        """
+        let a = new Map([[1, [1,2,new Set([1,2,3])]], [2, new Map([[1,2],[2,7]])]]);
         a.get(2).set("a", a);
-        let result = [];
-        for(let i = 0; i < 4; i++){
-            result.push(pyodide.runPython(`
-                from js import a
-                repr(a.to_py(depth=${i}))
-            `));
-        }
-        return result;
+        a;
         """
     )
+    result = [repr(a.to_py(depth=i)) for i in range(4)]
     assert result == [
         "[object Map]",
         "{1: 1,2,[object Set], 2: [object Map]}",
@@ -1092,20 +1329,19 @@ def test_to_py(selenium):
         "{1: [1, 2, {1, 2, 3}], 2: {1: 2, 2: 7, 'a': {...}}}",
     ]
 
-    result = selenium.run_js(
+
+@run_in_pyodide
+def test_to_py2(selenium):
+    from pyodide.code import run_js
+
+    a = run_js(
         """
-        self.a = { "x" : 2, "y" : 7, "z" : [1,2] };
+        let a = { "x" : 2, "y" : 7, "z" : [1,2] };
         a.z.push(a);
-        let result = [];
-        for(let i = 0; i < 4; i++){
-            result.push(pyodide.runPython(`
-                from js import a
-                repr(a.to_py(depth=${i}))
-            `));
-        }
-        return result;
+        a
         """
     )
+    result = [repr(a.to_py(depth=i)) for i in range(4)]
     assert result == [
         "[object Object]",
         "{'x': 2, 'y': 7, 'z': 1,2,[object Object]}",
@@ -1113,7 +1349,12 @@ def test_to_py(selenium):
         "{'x': 2, 'y': 7, 'z': [1, 2, {...}]}",
     ]
 
-    result = selenium.run_js(
+
+@run_in_pyodide
+def test_to_py3(selenium):
+    from pyodide.code import run_js
+
+    a = run_js(
         """
         class Temp {
             constructor(){
@@ -1121,92 +1362,41 @@ def test_to_py(selenium):
                 this.y = 7;
             }
         }
-        self.a = new Temp();
-        let result = pyodide.runPython(`
-            from js import a
-            b = a.to_py()
-            repr(type(b))
-        `);
-        return result;
+        new Temp();
         """
     )
-    assert result == "<class 'pyodide.JsProxy'>"
-
-    msg = "Cannot use key of type Array as a key to a Python dict"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run_js(
-            """
-            self.a = new Map([[[1,1], 2]]);
-            pyodide.runPython(`
-                from js import a
-                a.to_py()
-            `);
-            """
-        )
-
-    msg = "Cannot use key of type Array as a key to a Python set"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run_js(
-            """
-            self.a = new Set([[1,1]]);
-            pyodide.runPython(`
-                from js import a
-                a.to_py()
-            `);
-            """
-        )
-
-    msg = "contains both 0 and false"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run_js(
-            """
-            self.a = new Map([[0, 2], [false, 3]]);
-            pyodide.runPython(`
-                from js import a
-                a.to_py()
-            `);
-            """
-        )
-
-    msg = "contains both 1 and true"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run_js(
-            """
-            self.a = new Map([[1, 2], [true, 3]]);
-            pyodide.runPython(`
-                from js import a
-                a.to_py()
-            `);
-            """
-        )
-
-    msg = "contains both 0 and false"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run_js(
-            """
-            self.a = new Set([0, false]);
-            pyodide.runPython(`
-                from js import a
-                a.to_py()
-            `);
-            """
-        )
-
-    msg = "contains both 1 and true"
-    with pytest.raises(selenium.JavascriptException, match=msg):
-        selenium.run_js(
-            """
-            self.a = new Set([1, true]);
-            pyodide.runPython(`
-                from js import a
-                a.to_py()
-            `);
-            """
-        )
+    assert repr(type(a.to_py())) == "<class 'pyodide.ffi.JsProxy'>"
 
 
+@pytest.mark.parametrize(
+    "obj, msg",
+    [
+        ("Map([[[1,1], 2]])", "Cannot use key of type Array as a key to a Python dict"),
+        ("Set([[1,1]])", "Cannot use key of type Array as a key to a Python set"),
+        ("Map([[0, 2], [false, 3]])", "contains both 0 and false"),
+        ("Set([0, false])", "contains both 0 and false"),
+        ("Map([[1, 2], [true, 3]])", "contains both 1 and true"),
+        ("Set([1, true])", "contains both 1 and true"),
+    ],
+)
+@run_in_pyodide
+def test_to_py4(selenium, obj, msg):
+    import pytest
+
+    from pyodide.code import run_js
+    from pyodide.ffi import ConversionError, JsException
+
+    a = run_js(f"new {obj}")
+
+    with pytest.raises((ConversionError, JsException), match=msg):
+        a.to_py()
+
+
+@run_in_pyodide
 def test_to_py_default_converter(selenium):
-    selenium.run_js(
+    from pyodide.code import run_js
+
+    [r1, r2] = run_js(
         """
         class Pair {
             constructor(first, second){
@@ -1214,10 +1404,12 @@ def test_to_py_default_converter(selenium):
                 this.second = second;
             }
         }
-        l = [1,2,3];
-        self.p = new Pair(l, [l]);
+        let l = [1,2,3];
+        const r1 = new Pair(l, [l]);
+        const r2 = new Pair(l, [l]);
+        r2.first = r2;
         const opts = {defaultConverter(value, converter, cache){
-            if(p.constructor.name !== "Pair"){
+            if(value.constructor.name !== "Pair"){
                 return value;
             }
             let list = pyodide.globals.get("list");
@@ -1232,27 +1424,23 @@ def test_to_py_default_converter(selenium):
             second.destroy();
             return l;
         }};
-        self.r = pyodide.toPy(p, opts);
-        pyodide.runPython(`
-            from js import r
-            assert isinstance(r, list)
-            assert r[0] is r[1][0]
-            assert r[0] == [1,2,3]
-        `);
-        r.destroy();
-        self.p.first = p;
-        self.r = pyodide.toPy(p, opts);
-        pyodide.runPython(`
-            from js import r
-            assert r[0] is r
-        `);
-        r.destroy();
+        pyodide.toPy([r1, r2], opts);
         """
     )
 
+    assert isinstance(r1, list)
+    assert r1[0] is r1[1][0]
+    assert r1[0] == [1, 2, 3]
+    assert r2[0] is r2
 
+
+@run_in_pyodide
 def test_to_py_default_converter2(selenium):
-    selenium.run_js(
+    from typing import Any
+
+    from pyodide.code import run_js
+
+    [p1, p2] = run_js(
         """
         class Pair {
             constructor(first, second){
@@ -1260,31 +1448,30 @@ def test_to_py_default_converter2(selenium):
                 this.second = second;
             }
         }
-        l = [1,2,3];
-        self.p = new Pair(l, [l]);
-        pyodide.runPython(`
-            from js import p
-            def default_converter(value, converter, cache):
-                if value.constructor.name != "Pair":
-                    return value
-                l = []
-                cache(value, l)
-                l.append(converter(value.first))
-                l.append(converter(value.second))
-                return l
-            r = p.to_py(default_converter=default_converter)
-            assert isinstance(r, list)
-            assert r[0] is r[1][0]
-            assert r[0] == [1,2,3]
-        `);
-        self.p.first = p;
-        pyodide.runPython(`
-            r = p.to_py(default_converter=default_converter)
-            assert r[0] is r
-            del r
-        `);
+        const l = [1,2,3];
+        const r1 = new Pair(l, [l]);
+        const r2 = new Pair(l, [l]);
+        r2.first = r2;
+        [r1, r2]
         """
     )
+
+    def default_converter(value, converter, cache):
+        if value.constructor.name != "Pair":
+            return value
+        l: list[Any] = []
+        cache(value, l)
+        l.append(converter(value.first))
+        l.append(converter(value.second))
+        return l
+
+    r1 = p1.to_py(default_converter=default_converter)
+    assert isinstance(r1, list)
+    assert r1[0] is r1[1][0]
+    assert r1[0] == [1, 2, 3]
+
+    r2 = p2.to_py(default_converter=default_converter)
+    assert r2[0] is r2
 
 
 def test_to_js_default_converter(selenium):
@@ -1322,35 +1509,44 @@ def test_to_js_default_converter(selenium):
     )
 
 
+@run_in_pyodide
 def test_to_js_default_converter2(selenium):
-    selenium.run_js(
-        """
-        let res = pyodide.runPython(`
-        class Pair:
-            def __init__(self, first, second):
-                self.first = first
-                self.second = second
-        p = Pair(1,2)
-        from js import Array
-        def default_converter(value, convert, cacheConversion):
-            result = Array.new()
-            cacheConversion(value, result)
-            result.push(convert(value.first))
-            result.push(convert(value.second))
-            return result
-        from pyodide import to_js
-        to_js(p, default_converter=default_converter)
-        `);
-        assert(() => res[0] === 1);
-        assert(() => res[1] === 2);
-        let res2 = pyodide.runPython(`
-        p.first = p
-        to_js(p, default_converter=default_converter)
-        `);
-        assert(() => res2[0] === res2);
-        assert(() => res2[1] === 2);
-        """
-    )
+    import json
+
+    import pytest
+
+    from js import JSON, Array
+    from pyodide.code import run_js
+    from pyodide.ffi import JsException, to_js
+
+    class Pair:
+        __slots__ = ("first", "second")
+
+        def __init__(self, first, second):
+            self.first = first
+            self.second = second
+
+    p1 = Pair(1, 2)
+    p2 = Pair(1, 2)
+    p2.first = p2
+
+    def default_converter(value, convert, cacheConversion):
+        result = Array.new()
+        cacheConversion(value, result)
+        result.push(convert(value.first))
+        result.push(convert(value.second))
+        return result
+
+    p1js = to_js(p1, default_converter=default_converter)
+    p2js = to_js(p2, default_converter=default_converter)
+
+    assert json.loads(JSON.stringify(p1js)) == [1, 2]
+
+    with pytest.raises(JsException, match="TypeError"):
+        JSON.stringify(p2js)
+
+    assert run_js("(x) => x[0] === x")(p2js)
+    assert run_js("(x) => x[1] === 2")(p2js)
 
 
 def test_buffer_format_string(selenium):
@@ -1422,18 +1618,7 @@ def test_buffer_format_string(selenium):
         assert array_name == expected_array_name
 
 
-@run_in_pyodide
-def test_object_with_null_constructor(selenium):
-    from unittest import TestCase
-
-    from pyodide import run_js
-
-    o = run_js("Object.create(null)")
-    with TestCase().assertRaises(TypeError):
-        repr(o)
-
-
-def test_dict_converter_cache(selenium):
+def test_dict_converter_cache1(selenium):
     selenium.run_js(
         """
         let d1 = pyodide.runPython('d={0: {1: 2}}; d[1]=d[0]; d');
@@ -1444,51 +1629,399 @@ def test_dict_converter_cache(selenium):
     )
 
 
-@pytest.mark.parametrize("n", [1 << 31, 1 << 32, 1 << 33, 1 << 63, 1 << 64, 1 << 65])
-@run_in_pyodide
-def test_very_large_length(selenium, n):
-    from unittest import TestCase
-
-    from pyodide import run_js
-
-    raises = TestCase().assertRaises(
-        OverflowError, msg=f"length {n} of object is larger than INT_MAX (2147483647)"
+@pytest.mark.xfail(reason="TODO: Fix me")
+def test_dict_converter_cache2(selenium):
+    selenium.run_js(
+        """
+        let d1 = pyodide.runPython('d={0: {1: 2}}; d[1]=d[0]; d[2] = d; d');
+        let d = d1.toJs({dict_converter: Object.fromEntries});
+        assert(() => d[2] === d);
+        """
     )
 
-    o = run_js(f"({{length : {n}}})")
-    with raises:
-        len(o)
 
-    # 1. Set toStringTag to NodeList to force JsProxy to feature detect this object
-    # as an array
-    # 2. Return a very large length
-    # 3. JsProxy_subscript_array should successfully handle this and propagate the error.
-    a = run_js(f"({{[Symbol.toStringTag] : 'NodeList', length: {n}}})")
-    with raises:
-        a[-1]
-
-
-@pytest.mark.parametrize(
-    "n", [-1, -2, -3, -100, -1 << 31, -1 << 32, -1 << 33, -1 << 63, -1 << 64, -1 << 65]
-)
 @run_in_pyodide
-def test_negative_length(selenium, n):
-    from unittest import TestCase
+def test_dict_and_default_converter(selenium):
+    from js import Object
+    from pyodide.ffi import to_js
 
-    from pyodide import run_js
+    def default_converter(_obj, c, _):
+        return c({"a": 2})
 
-    raises = TestCase().assertRaises(
-        ValueError, msg=f"length {n} of object is negative"
+    class A:
+        pass
+
+    res = to_js(
+        A, dict_converter=Object.fromEntries, default_converter=default_converter
+    )
+    assert res.a == 2
+
+
+@run_in_pyodide
+def test_bind_attrs(selenium):
+    from typing import Annotated
+
+    from _pyodide.jsbind import BindClass, Deep
+    from pyodide.code import run_js
+
+    class A(BindClass):
+        x: int
+        y: Annotated[list[int], Deep]
+
+    a: A = run_js(
+        """
+        ({
+            x: 7,
+            y: [1,2,3],
+        })
+        """
+    ).bind_sig(A)
+    assert a.x == 7
+    assert a.y == [1, 2, 3]
+
+
+@run_in_pyodide
+def test_bind_call_convert(selenium):
+    from typing import Annotated
+
+    from _pyodide.jsbind import Deep, Json
+    from pyodide.code import run_js
+
+    def fsig(
+        a: dict[str, int],
+        b: Annotated[dict[str, int], Json],
+        c: Annotated[dict[str, int], Deep],
+        /,
+    ) -> Annotated[list[int], Deep]:
+        raise NotImplementedError
+
+    f = run_js(
+        """
+        (function f(x, y, z) {
+            return [x.get("a"), y.b, z.c]
+        })
+        """
+    ).bind_sig(fsig)
+
+    x = {"a": 2}
+    y = {"b": 4}
+    z = {"c": 6}
+    assert f(x, y, z) == [2, 4, 6]
+
+
+@run_in_pyodide
+def test_bind_call_bind_return_value(selenium):
+    from typing import Annotated
+
+    from _pyodide.jsbind import BindClass, Deep
+    from pyodide.code import run_js
+
+    class A(BindClass):
+        x: Annotated[list[int], Deep]
+
+    def fsig() -> A:
+        raise NotImplementedError
+
+    f = run_js(
+        """
+        (function f() {
+            return {x: [77, 1]};
+        })
+        """
+    ).bind_sig(fsig)
+
+    assert f().x == [77, 1]
+
+
+@run_in_pyodide
+async def test_bind_future_convert_result(selenium):
+    from asyncio import Future
+    from typing import Annotated
+
+    from _pyodide.jsbind import Deep
+    from pyodide.code import run_js
+
+    def f1() -> Future[Annotated[list[int], Deep]]:
+        raise NotImplementedError
+
+    async def f2() -> Annotated[list[int], Deep]:
+        raise NotImplementedError
+
+    jsfunc = run_js(
+        """
+        (async function() {
+            return [1,2,3];
+        })
+        """
+    )
+    f1 = jsfunc.bind_sig(f1)
+    f2 = jsfunc.bind_sig(f2)
+    assert await f1() == [1, 2, 3]
+    assert await f2() == [1, 2, 3]
+
+
+@run_in_pyodide
+async def test_bind_future_bind_result(selenium):
+    from asyncio import Future
+    from typing import Annotated
+
+    from _pyodide.jsbind import BindClass, Deep
+    from pyodide.code import run_js
+
+    class A(BindClass):
+        x: Annotated[list[int], Deep]
+
+    def f1() -> Future[A]:
+        raise NotImplementedError
+
+    async def f2() -> A:
+        raise NotImplementedError
+
+    jsfunc = run_js(
+        """
+        async function f() {
+            return {x: [77, 1]};
+        };
+        f
+        """
+    )
+    f1 = jsfunc.bind_sig(f1)
+    f2 = jsfunc.bind_sig(f2)
+    assert (await f1()).x == [77, 1]
+    assert (await f2()).x == [77, 1]
+
+
+@run_in_pyodide
+def test_bind3(selenium):
+    from pyodide.code import run_js
+
+    o = run_js(
+        """
+        ({
+            f(x, y, z) {
+                return [x.get("a"), y.b, z.c]
+            },
+            x: [1,2,3],
+            y: {
+                g(x) {
+                    return x.a;
+                },
+                c: [1,2,3]
+            }
+        })
+        """
+    )
+    from typing import Annotated
+
+    from _pyodide.jsbind import BindClass, Deep, Json
+
+    class B(BindClass):
+        @staticmethod
+        def g(x: Annotated[dict[str, int], Json], /) -> int:
+            raise NotImplementedError
+
+        c: Annotated[list[int], Deep]
+
+    class A(BindClass):
+        @staticmethod
+        def f(
+            a: dict[str, int],
+            b: Annotated[dict[str, int], Json],
+            c: Annotated[dict[str, int], Deep],
+            /,
+        ) -> Annotated[list[int], Deep]:
+            raise NotImplementedError
+
+        x: Annotated[list[int], Deep]
+        y: B
+
+    o2: A = o.bind_sig(A)
+    f1 = o2.f
+    f2 = o.f.bind_sig(A.f)
+
+    x = {"a": 2}
+    y = {"b": 4}
+    z = {"c": 6}
+    assert o2.f(x, y, z) == [2, 4, 6]
+    assert f1(x, y, z) == [2, 4, 6]
+    assert f2(x, y, z) == [2, 4, 6]
+    assert o2.y.g({"a": 7}) == 7
+
+
+@run_in_pyodide
+async def test_bind_async1(selenium):
+    from asyncio import Future
+    from typing import Annotated
+
+    from _pyodide.jsbind import BindClass, Deep
+    from pyodide.code import run_js
+
+    class A(BindClass):
+        x: Future[Annotated[list[int], Deep]]
+
+    a: A = run_js(
+        """
+        ({
+            x: (async function () {
+                return [1, 2, 3]
+            })()
+        })
+        """
+    ).bind_sig(A)
+
+    assert await a.x == [1, 2, 3]
+
+
+@run_in_pyodide
+async def test_bind_async2(selenium):
+    from asyncio import Future
+    from typing import Annotated
+
+    from _pyodide.jsbind import Deep
+    from pyodide.code import run_js
+    from pyodide.ffi import JsProxy
+
+    jsfunc: JsProxy = run_js(
+        """
+        (async function () {
+            return [1, 2, 3]
+        });
+        """
     )
 
-    o = run_js(f"({{length : {n}}})")
-    with raises:
-        len(o)
+    async def f1() -> Annotated[list[int], Deep]:
+        raise NotImplementedError
 
-    # 1. Set toStringTag to NodeList to force JsProxy to feature detect this object
-    # as an array
-    # 2. Return a negative length
-    # 3. JsProxy_subscript_array should successfully handle this and propagate the error.
-    a = run_js(f"({{[Symbol.toStringTag] : 'NodeList', length: {n}}})")
-    with raises:
-        a[-1]
+    def f2() -> Future[Annotated[list[int], Deep]]:
+        raise NotImplementedError
+
+    f1 = jsfunc.bind_sig(f1)
+    f2 = jsfunc.bind_sig(f2)
+
+    assert await f1() == [1, 2, 3]
+    assert await f2() == [1, 2, 3]
+
+
+@run_in_pyodide
+async def test_bind_async3(selenium):
+    from asyncio import Future
+    from typing import Annotated
+
+    from _pyodide.jsbind import BindClass, Deep
+    from pyodide.code import run_js
+    from pyodide.ffi import JsProxy
+
+    class A(BindClass):
+        x: Annotated[list[int], Deep]
+
+    async def f1() -> A:
+        raise NotImplementedError
+
+    def f2() -> Future[A]:
+        raise NotImplementedError
+
+    jsfunc: JsProxy = run_js(
+        """
+        (async function() {
+            return {
+                x : [1,2,3]
+            };
+        })
+        """
+    )
+
+    f1 = jsfunc.bind_sig(f1)
+    f2 = jsfunc.bind_sig(f2)
+
+    assert (await f1()).x == [1, 2, 3]
+    assert (await f2()).x == [1, 2, 3]
+
+
+@run_in_pyodide
+def test_bind_pre_convert(selenium):
+    from typing import Annotated, _caches  # type:ignore[attr-defined]
+
+    from _pyodide.jsbind import Deep, Py2JsConverterMeta
+    from js import Headers  # type:ignore[attr-defined]
+    from pyodide.code import run_js
+    from pyodide.ffi import JsProxy
+
+    ajs: JsProxy = run_js("(x) => [x.toString(), JSON.stringify(Array.from(x))]")
+
+    class ToHeaders(metaclass=Py2JsConverterMeta):
+        @staticmethod
+        def pre_convert(value):
+            return Headers.new(value.items())
+
+    def a(
+        x: Annotated[dict[str, str] | None, ToHeaders], /
+    ) -> Annotated[list[str], Deep]:
+        return []
+
+    abound = ajs.bind_sig(a)
+    assert abound({"x": "y"}) == ["[object Headers]", '[["x","y"]]']
+    _caches[Annotated._class_getitem_inner.__wrapped__].cache_clear()  # type:ignore[attr-defined]
+
+
+@run_in_pyodide
+def test_bind_construct(selenium):
+    from typing import Annotated, Any, NotRequired, TypedDict
+
+    from _pyodide.jsbind import Default, Json
+    from pyodide.code import run_js
+    from pyodide.ffi import JsProxy
+
+    class Inner(TypedDict):
+        b: int
+        c: NotRequired[str]
+
+    class Outer(TypedDict):
+        a: list[Inner]
+        x: int
+
+    ajs: JsProxy = run_js("(x) => x")
+
+    def a_shape(x: Annotated[Any, Default], /) -> Annotated[Outer, Json]:
+        raise NotImplementedError
+
+    # pyright infers abound has same type as a_shape,
+    a = ajs.bind_sig(a_shape)
+    o = run_js("({x: 7, a : [{b: 1, c: 'xyz'},{b: 2},{b: 3}]})")
+
+    res = a(o)
+    assert res["x"] == 7
+    res["x"] = 9
+    assert o.x == 9
+    assert res["a"][0]["b"] == 1
+    assert res["a"][0]["c"]
+    assert "c" in res["a"][0]
+    assert res["a"][0]["c"] == "xyz"
+    assert res["a"][1]["b"] == 2
+    assert "c" not in res["a"][1]
+    res["a"][1]["c"] = "s"
+    assert o.a[1].c == "s"
+
+
+@run_in_pyodide
+def test_bind_py_json(selenium):
+    from pyodide.code import run_js
+    from pyodide.ffi import JsProxy
+
+    A: JsProxy = run_js("(class {x = 7})")
+
+    class A_sig:
+        x: int
+
+    Abound = A.bind_sig(A_sig)
+
+    res = Abound()
+    assert res.x == 7
+
+
+@run_in_pyodide
+def test_to_js_no_leak(selenium):
+    from js import Object
+    from pyodide.ffi import to_js
+
+    d = {"key": Object()}
+    to_js(d)
